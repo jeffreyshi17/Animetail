@@ -1,13 +1,13 @@
 package eu.kanade.tachiyomi.ui.player.cast
 
+import android.content.Context
 import android.net.Uri
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontFamily
 import androidx.core.net.toUri
+import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
-import eu.kanade.tachiyomi.ui.player.PlayerActivity
-import eu.kanade.tachiyomi.ui.player.PlayerViewModel
 import eu.kanade.tachiyomi.ui.player.cast.components.BorderStyle
 import eu.kanade.tachiyomi.ui.player.cast.components.SubtitleSettings
 import kotlinx.coroutines.Dispatchers
@@ -17,24 +17,36 @@ import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
 
 /**
- * Turns the player's current [Video] into a [CastMediaRequest] the receiver can play: torrents become
- * the local torrent server's stream, and local files, header-gated streams, HLS and subtitles go
- * through the cast proxy (see [CastRouting]).
+ * Turns a [Video] into a [CastMediaRequest] the receiver can play: torrents become the local torrent
+ * server's stream, and local files, header-gated streams, HLS and subtitles go through the cast proxy
+ * (see [CastRouting]). It needs no player, so the cast tracker can load the next episode with the
+ * player closed.
  */
-class CastMediaBuilder(
-    private val viewModel: PlayerViewModel,
-    private val activity: PlayerActivity,
-) {
-    private val appGraph by lazy { activity.applicationContext.appGraph }
+class CastMediaBuilder(private val context: Context) {
+    private val appGraph by lazy { context.applicationContext.appGraph }
     private val proxyHolder get() = appGraph.castProxyHolder
     private val torrentServerApi get() = appGraph.torrentServerApi
     private val torrentServerUtils get() = appGraph.torrentServerUtils
 
+    /** What the receiver shows about the video. */
+    data class Metadata(
+        val title: String,
+        val subtitle: String,
+        val imageUrl: String?,
+        /** In seconds, or null when unknown. */
+        val durationSeconds: Double?,
+    )
+
     /**
+     * @param headers the headers the video plays with; see [sourceHeaders].
+     * @param activeSubtitleIndex index into [Video.subtitleTracks] of the subtitle to show.
      * @param lanHost the phone's address on the network the receiver is on.
      */
     suspend fun build(
         video: Video,
+        headers: Map<String, String>,
+        metadata: Metadata,
+        activeSubtitleIndex: Int?,
         lanHost: String,
         startPositionSeconds: Double,
         autoplay: Boolean,
@@ -46,7 +58,6 @@ class CastMediaBuilder(
 
             else -> video.videoUrl
         }
-        val headers = sourceHeaders(video)
         val contentType = contentType(streamUrl)
         val routed = proxyHolder.route(
             streamUrl = streamUrl,
@@ -60,51 +71,34 @@ class CastMediaBuilder(
         CastMediaRequest(
             url = routed.streamUrl,
             contentType = contentType,
-            title = viewModel.currentAnime.value?.title.orEmpty(),
-            subtitle = viewModel.currentEpisode.value?.name.orEmpty(),
-            imageUrl = viewModel.currentAnime.value?.thumbnailUrl,
-            durationSeconds = viewModel.mpv.getPropertyDouble("duration")?.takeIf { it > 0 },
+            title = metadata.title,
+            subtitle = metadata.subtitle,
+            imageUrl = metadata.imageUrl,
+            durationSeconds = metadata.durationSeconds,
             startPositionSeconds = startPositionSeconds,
             autoplay = autoplay,
             textTracks = video.subtitleTracks.zip(routed.subtitleUrls) { track, url ->
                 CastMediaRequest.TextTrack(url = url, name = track.lang, language = null)
             },
-            activeTextTrackIndex = activeSubtitleIndex(video),
+            activeTextTrackIndex = activeSubtitleIndex,
             textTrackStyle = textStyle,
         )
     }
 
-    /** The headers mpv plays the video with (see `PlayerActivity.setHttpOptions`). */
-    private fun sourceHeaders(video: Video): Map<String, String> {
-        val headers = video.headers
-            ?: (viewModel.currentSource.value as? AnimeHttpSource)
-                ?.takeIf { viewModel.isEpisodeOnline() == true }
-                ?.headers
-            ?: return emptyMap()
-        return headers.toMultimap().mapValues { it.value.firstOrNull().orEmpty() }
-    }
-
     private fun contentType(url: String): String {
         if (url.startsWith("content://")) {
-            activity.contentResolver.getType(url.toUri())
+            context.contentResolver.getType(url.toUri())
                 ?.takeIf { it.startsWith("video/") }
                 ?.let { return it }
         }
         return CastMediaRequest.contentTypeFor(Uri.decode(url))
     }
 
-    /** The external subtitle mpv shows now: mpv names `sub-add`ed tracks after [Video.subtitleTracks] langs. */
-    private fun activeSubtitleIndex(video: Video): Int? {
-        val selectedId = viewModel.selectedSubtitles.value.first.takeIf { it > 0 } ?: return null
-        val selected = viewModel.subtitleTracks.value.firstOrNull { it.id == selectedId } ?: return null
-        return video.subtitleTracks.indexOfFirst { it.lang == selected.name }.takeIf { it >= 0 }
-    }
-
     private suspend fun torrentLinkHandler(videoUrl: String, quality: String): String {
         var index = 0
 
         if (videoUrl.startsWith("content://")) {
-            val videoInputStream = activity.applicationContext.contentResolver.openInputStream(Uri.parse(videoUrl))
+            val videoInputStream = context.contentResolver.openInputStream(Uri.parse(videoUrl))
                 ?: throw IllegalStateException("Unable to open InputStream for content: $videoUrl")
             val torrent = torrentServerApi.uploadTorrent(videoInputStream, quality, false)
             return torrentServerUtils.getTorrentPlayLink(torrent, 0)
@@ -121,6 +115,25 @@ class CastMediaBuilder(
         val currentTorrent = torrentServerApi.addTorrent(videoUrl, quality, "", "", false)
         logcat(LogPriority.DEBUG) { "Torrent URL: $videoUrl" }
         return torrentServerUtils.getTorrentPlayLink(currentTorrent, index)
+    }
+
+    companion object {
+        /**
+         * The headers mpv plays [video] with (see `PlayerActivity.setHttpOptions`): the video's own,
+         * else the source's for an online episode.
+         */
+        fun sourceHeaders(video: Video, source: AnimeSource?, isEpisodeOnline: Boolean): Map<String, String> {
+            val headers = video.headers
+                ?: (source as? AnimeHttpSource)?.takeIf { isEpisodeOnline }?.headers
+                ?: return emptyMap()
+            return headers.toMultimap().mapValues { it.value.firstOrNull().orEmpty() }
+        }
+
+        /** The index of the subtitle named [name] in [video], so the next episode keeps the language. */
+        fun subtitleIndexNamed(video: Video, name: String?): Int? {
+            name ?: return null
+            return video.subtitleTracks.indexOfFirst { it.lang == name }.takeIf { it >= 0 }
+        }
     }
 }
 

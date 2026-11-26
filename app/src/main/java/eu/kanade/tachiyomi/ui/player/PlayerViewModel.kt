@@ -48,15 +48,11 @@ import dev.zacsweers.metro.AssistedInject
 import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metrox.viewmodel.ViewModelAssistedFactory
 import dev.zacsweers.metrox.viewmodel.ViewModelAssistedFactoryKey
-import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.entries.anime.interactor.GetAnimeAudioLanguage
 import eu.kanade.domain.entries.anime.interactor.SetAnimeAudioLanguage
 import eu.kanade.domain.entries.anime.interactor.SetAnimeViewerFlags
 import eu.kanade.domain.entries.anime.interactor.UpdateAnime
-import eu.kanade.domain.items.episode.model.toDbEpisode
 import eu.kanade.domain.source.anime.interactor.GetAnimeIncognitoState
-import eu.kanade.domain.track.anime.interactor.TrackEpisode
-import eu.kanade.domain.track.service.TrackPreferences
 import eu.kanade.domain.ui.UiPreferences
 import eu.kanade.presentation.more.settings.screen.player.custombutton.CustomButtonFetchState
 import eu.kanade.presentation.more.settings.screen.player.custombutton.getButtons
@@ -73,9 +69,7 @@ import eu.kanade.tachiyomi.data.cache.AnimeBackgroundCache
 import eu.kanade.tachiyomi.data.cache.AnimeCoverCache
 import eu.kanade.tachiyomi.data.database.models.anime.Episode
 import eu.kanade.tachiyomi.data.database.models.anime.EpisodeImpl
-import eu.kanade.tachiyomi.data.database.models.anime.isRecognizedNumber
 import eu.kanade.tachiyomi.data.database.models.anime.toDomainEpisode
-import eu.kanade.tachiyomi.data.download.anime.AnimeDownloadCache
 import eu.kanade.tachiyomi.data.download.anime.AnimeDownloadManager
 import eu.kanade.tachiyomi.data.download.anime.model.AnimeDownload
 import eu.kanade.tachiyomi.data.saver.Image
@@ -105,7 +99,6 @@ import eu.kanade.tachiyomi.ui.reader.SaveImageNotifier
 import eu.kanade.tachiyomi.util.editBackground
 import eu.kanade.tachiyomi.util.editCover
 import eu.kanade.tachiyomi.util.editThumbnail
-import eu.kanade.tachiyomi.util.episode.filterDownloadedEpisodes
 import eu.kanade.tachiyomi.util.lang.byteSize
 import eu.kanade.tachiyomi.util.lang.takeBytes
 import eu.kanade.tachiyomi.util.storage.DiskUtil
@@ -151,13 +144,8 @@ import tachiyomi.domain.download.service.DownloadPreferences
 import tachiyomi.domain.entries.anime.interactor.GetAnime
 import tachiyomi.domain.entries.anime.model.Anime
 import tachiyomi.domain.history.anime.interactor.GetNextEpisodes
-import tachiyomi.domain.history.anime.interactor.UpsertAnimeHistory
-import tachiyomi.domain.history.anime.model.AnimeHistoryUpdate
-import tachiyomi.domain.items.episode.interactor.GetEpisodesByAnimeId
 import tachiyomi.domain.items.episode.interactor.UpdateEpisode
 import tachiyomi.domain.items.episode.model.EpisodeUpdate
-import tachiyomi.domain.items.episode.service.getEpisodeSort
-import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.domain.source.anime.service.AnimeSourceManager
 import tachiyomi.domain.track.anime.interactor.GetAnimeTracks
 import tachiyomi.i18n.MR
@@ -168,7 +156,6 @@ import tachiyomi.source.local.image.anime.LocalAnimeCoverManager
 import tachiyomi.source.local.image.anime.LocalEpisodeThumbnailManager
 import java.io.File
 import java.io.InputStream
-import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.roundToInt
@@ -187,27 +174,20 @@ class PlayerViewModel(
     private val downloadManager: AnimeDownloadManager,
     private val imageSaver: ImageSaver,
     private val downloadPreferences: DownloadPreferences,
-    private val trackPreferences: TrackPreferences,
-    private val trackEpisode: TrackEpisode,
     private val getAnime: GetAnime,
     private val getNextEpisodes: GetNextEpisodes,
-    private val getEpisodesByAnimeId: GetEpisodesByAnimeId,
     private val getAnimeCategories: GetAnimeCategories,
     private val getTracks: GetAnimeTracks,
-    private val upsertHistory: UpsertAnimeHistory,
     private val updateEpisode: UpdateEpisode,
     private val setAnimeViewerFlags: SetAnimeViewerFlags,
     private val getAnimeAudioLanguage: GetAnimeAudioLanguage,
     private val setAnimeAudioLanguage: SetAnimeAudioLanguage,
     internal val playerPreferences: PlayerPreferences,
     internal val gesturePreferences: GesturePreferences,
-    private val basePreferences: BasePreferences,
     private val getCustomButtons: GetCustomButtons,
     private val trackSelect: TrackSelect,
     private val getIncognitoState: GetAnimeIncognitoState,
-    private val libraryPreferences: LibraryPreferences,
     uiPreferences: UiPreferences,
-    private val downloadCache: AnimeDownloadCache,
     private val updateAnime: UpdateAnime,
     private val coverCache: AnimeCoverCache,
     private val backgroundCache: AnimeBackgroundCache,
@@ -216,6 +196,8 @@ class PlayerViewModel(
     private val localEpisodeThumbnailManager: LocalEpisodeThumbnailManager,
     private val trackerManager: TrackerManager,
     private val json: Json,
+    private val playerPlaylist: PlayerPlaylist,
+    private val progressRecorder: WatchProgressRecorder,
 ) : ViewModel() {
 
     @AssistedFactory
@@ -508,10 +490,6 @@ class PlayerViewModel(
 
     fun updateIsLoadingEpisode(value: Boolean) {
         _isLoadingEpisode.update { _ -> value }
-    }
-
-    private fun updateEpisodeList(episodeList: List<Episode>) {
-        _currentPlaylist.update { _ -> filterEpisodeList(episodeList) }
     }
 
     fun getDecoder() {
@@ -1356,65 +1334,6 @@ class PlayerViewModel(
 
     private var episodeToDownload: AnimeDownload? = null
 
-    private fun filterEpisodeList(episodes: List<Episode>): List<Episode> {
-        val anime = currentAnime.value ?: return episodes
-        val selectedEpisode = episodes.find { it.id == episodeId }
-            ?: error("Requested episode of id $episodeId not found in episode list")
-
-        val episodesForPlayer = episodes.filterNot {
-            (
-                anime.unseenFilterRaw == Anime.EPISODE_SHOW_SEEN &&
-                    !it.seen
-                ) ||
-                (
-                    anime.unseenFilterRaw == Anime.EPISODE_SHOW_UNSEEN &&
-                        it.seen
-                    ) ||
-                (
-                    anime.downloadedFilterRaw == Anime.EPISODE_SHOW_DOWNLOADED &&
-                        !downloadManager.isEpisodeDownloaded(
-                            it.name,
-                            it.scanlator,
-                            it.url,
-                            anime.title,
-                            anime.source,
-                        )
-                    ) ||
-                (
-                    anime.downloadedFilterRaw == Anime.EPISODE_SHOW_NOT_DOWNLOADED &&
-                        downloadManager.isEpisodeDownloaded(
-                            it.name,
-                            it.scanlator,
-                            it.url,
-                            anime.title,
-                            anime.source,
-                        )
-                    ) ||
-                (
-                    anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_BOOKMARKED &&
-                        !it.bookmark
-                    ) ||
-                (
-                    anime.bookmarkedFilterRaw == Anime.EPISODE_SHOW_NOT_BOOKMARKED &&
-                        it.bookmark
-                    ) ||
-                (
-                    anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_FILLERMARKED &&
-                        !it.fillermark
-                    ) ||
-                (
-                    anime.fillermarkedFilterRaw == Anime.EPISODE_SHOW_NOT_FILLERMARKED &&
-                        it.fillermark
-                    )
-        }.toMutableList()
-
-        if (episodesForPlayer.all { it.id != episodeId }) {
-            episodesForPlayer += listOf(selectedEpisode)
-        }
-
-        return episodesForPlayer
-    }
-
     fun getCurrentEpisodeIndex(): Int {
         return currentPlaylist.value.indexOfFirst { currentEpisode.value?.id == it.id }
     }
@@ -1505,7 +1424,7 @@ class PlayerViewModel(
 
                 checkTrackers(anime)
 
-                updateEpisodeList(initEpisodeList(anime))
+                _currentPlaylist.update { _ -> playerPlaylist.episodes(anime, initialEpisodeId) }
 
                 val episode = currentPlaylist.value.first { it.id == episodeId }
                 val source = sourceManager.getOrStub(anime.source)
@@ -1646,22 +1565,9 @@ class PlayerViewModel(
         mpv.setPropertyDouble("user-data/current-anime/episode-number", episode.episode_number.toDouble())
     }
 
-    private fun initEpisodeList(anime: Anime): List<Episode> {
-        val episodes = runBlocking { getEpisodesByAnimeId.await(anime.id) }
-
-        return episodes
-            .sortedWith(getEpisodeSort(anime, sortDescending = false))
-            .run {
-                if (basePreferences.downloadedOnly.get()) {
-                    filterDownloadedEpisodes(anime, downloadCache)
-                } else {
-                    this
-                }
-            }
-            .map { it.toDbEpisode() }
-    }
-
     private var hasTrackers: Boolean = false
+    private val privacy: WatchProgressRecorder.Privacy
+        get() = WatchProgressRecorder.Privacy(incognito = incognitoMode, hasTrackers = hasTrackers)
     private val checkTrackers: (Anime) -> Unit = { anime ->
         val tracks = runBlocking { getTracks.await(anime.id) }
         hasTrackers = tracks.isNotEmpty()
@@ -2232,9 +2138,7 @@ class PlayerViewModel(
 
         episodePosition = seconds
 
-        val progress = playerPreferences.progressPreference().get()
-        val shouldTrack = !incognitoMode || hasTrackers
-        if (seconds >= totalSeconds * progress && shouldTrack) {
+        if (progressRecorder.reachedSeen(seconds, totalSeconds) && privacy.savesProgress) {
             viewModelScope.launchNonCancellable {
                 updateEpisodeProgressOnComplete(currentEp)
             }
@@ -2250,27 +2154,10 @@ class PlayerViewModel(
 
     private suspend fun updateEpisodeProgressOnComplete(currentEp: Episode) {
         if (isNetworkStreamSession) return
-        currentEp.seen = true
-        updateTrackEpisodeSeen(currentEp)
-        deleteEpisodeIfNeeded(currentEp)
-
-        val markDuplicateAsSeen = libraryPreferences.markDuplicateSeenEpisodeAsSeen.get()
-            .contains(LibraryPreferences.MARK_DUPLICATE_EPISODE_SEEN_EXISTING)
-        if (!markDuplicateAsSeen) return
-
-        val duplicateUnseenEpisodes = currentPlaylist.value
-            .mapNotNull { episode ->
-                if (
-                    !episode.seen &&
-                    episode.isRecognizedNumber &&
-                    episode.episode_number == currentEp.episode_number
-                ) {
-                    EpisodeUpdate(id = episode.id!!, seen = true)
-                } else {
-                    null
-                }
-            }
-        updateEpisode.awaitAll(duplicateUnseenEpisodes)
+        val anime = currentAnime.value ?: return
+        // If episode is completely seen no need to download it
+        episodeToDownload = null
+        progressRecorder.onEpisodeSeen(anime, currentEp, currentPlaylist.value, privacy)
     }
 
     private fun downloadNextEpisodes() {
@@ -2296,28 +2183,6 @@ class PlayerViewModel(
         }
     }
 
-    /**
-     * Determines if deleting option is enabled and nth to last episode actually exists.
-     * If both conditions are satisfied enqueues episode for delete
-     * @param chosenEpisode current episode, which is going to be marked as seen.
-     */
-    private fun deleteEpisodeIfNeeded(chosenEpisode: Episode) {
-        if (isNetworkStreamSession) return
-        // Determine which episode should be deleted and enqueue
-        val currentEpisodePosition = currentPlaylist.value.indexOf(chosenEpisode)
-        val removeAfterSeenSlots = downloadPreferences.removeAfterReadSlots.get()
-        val episodeToDelete = currentPlaylist.value.getOrNull(
-            currentEpisodePosition - removeAfterSeenSlots,
-        )
-        // If episode is completely seen no need to download it
-        episodeToDownload = null
-
-        // Check if deleting option is enabled and episode exists
-        if (removeAfterSeenSlots != -1 && episodeToDelete != null) {
-            enqueueDeleteSeenEpisodes(episodeToDelete)
-        }
-    }
-
     fun saveCurrentEpisodeWatchingProgress() {
         currentEpisode.value?.let { saveWatchingProgress(it) }
     }
@@ -2338,18 +2203,7 @@ class PlayerViewModel(
      */
     private suspend fun saveEpisodeProgress(episode: Episode) {
         if (isNetworkStreamSession) return
-        if (!incognitoMode || hasTrackers) {
-            updateEpisode.await(
-                EpisodeUpdate(
-                    id = episode.id!!,
-                    seen = episode.seen,
-                    bookmark = episode.bookmark,
-                    fillermark = episode.fillermark,
-                    lastSecondSeen = episode.last_second_seen,
-                    totalSeconds = episode.total_seconds,
-                ),
-            )
-        }
+        progressRecorder.saveProgress(episode, privacy)
     }
 
     /**
@@ -2357,13 +2211,7 @@ class PlayerViewModel(
      */
     private suspend fun saveEpisodeHistory(episode: Episode) {
         if (isNetworkStreamSession) return
-        if (!incognitoMode) {
-            val episodeId = episode.id!!
-            val seenAt = Date()
-            upsertHistory.await(
-                AnimeHistoryUpdate(episodeId, seenAt),
-            )
-        }
+        progressRecorder.saveHistory(episode.id!!, privacy)
     }
 
     /**
@@ -2525,29 +2373,6 @@ class PlayerViewModel(
     sealed class SaveImageResult {
         class Success(val uri: Uri) : SaveImageResult()
         class Error(val error: Throwable) : SaveImageResult()
-    }
-
-    private fun updateTrackEpisodeSeen(episode: Episode) {
-        if (basePreferences.incognitoMode.get() || !hasTrackers) return
-        if (!trackPreferences.autoUpdateTrack.get()) return
-
-        val anime = currentAnime.value ?: return
-
-        viewModelScope.launchNonCancellable {
-            trackEpisode.await(context, anime.id, episode.episode_number.toDouble())
-        }
-    }
-
-    /**
-     * Enqueues this [episode] to be deleted when [deletePendingEpisodes] is called. The download
-     * manager handles persisting it across process deaths.
-     */
-    private fun enqueueDeleteSeenEpisodes(episode: Episode) {
-        if (!episode.seen) return
-        val anime = currentAnime.value ?: return
-        viewModelScope.launchNonCancellable {
-            downloadManager.enqueueEpisodesToDelete(listOf(episode.toDomainEpisode()!!), anime)
-        }
     }
 
     /**

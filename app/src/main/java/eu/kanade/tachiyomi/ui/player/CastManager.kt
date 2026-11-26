@@ -5,10 +5,7 @@ import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.cast.MediaMetadata
@@ -18,8 +15,10 @@ import com.google.android.gms.cast.TextTrackStyle
 import com.google.android.gms.cast.framework.CastContext
 import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.media.RemoteMediaClient
+import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.ui.player.cast.CastBackend
 import eu.kanade.tachiyomi.ui.player.cast.CastMediaBuilder
+import eu.kanade.tachiyomi.ui.player.cast.CastMediaRequest
 import eu.kanade.tachiyomi.ui.player.cast.CastNowPlaying
 import eu.kanade.tachiyomi.ui.player.cast.CastSessionListener
 import eu.kanade.tachiyomi.ui.player.cast.LanAddress
@@ -95,9 +94,7 @@ class CastManager(
     }
     private val autoplayEnabled = playerPreferences.autoplayEnabled().get()
     private val subtitlePreferences = CastSubtitlePreferences(preferenceStore)
-    private val mediaBuilder by lazy {
-        viewModel?.let { CastMediaBuilder(it, activity as PlayerActivity) }
-    }
+    private val mediaBuilder by lazy { CastMediaBuilder(context) }
     private val mediaRouter by lazy {
         androidx.mediarouter.media.MediaRouter.getInstance(context)
     }
@@ -169,10 +166,43 @@ class CastManager(
     fun isCastingEpisode(episodeId: Long?): Boolean =
         episodeId != null && nowPlaying.episode.value?.episodeId == episodeId
 
-    private fun recordNowPlaying() {
+    private fun recordNowPlaying(request: CastMediaRequest) {
         val animeId = viewModel?.currentAnime?.value?.id ?: return
         val episodeId = viewModel?.currentEpisode?.value?.id ?: return
-        nowPlaying.set(CastNowPlaying.Episode(animeId, episodeId))
+        val subtitleName = request.activeTextTrackIndex?.let { request.textTracks.getOrNull(it)?.name }
+        nowPlaying.set(CastNowPlaying.Episode(animeId, episodeId, subtitleName))
+    }
+
+    /** The receiver's request for [video] as the player shows it now: position, subtitle, metadata. */
+    private suspend fun buildPlayerRequest(
+        video: Video,
+        lanHost: String,
+        autoplay: Boolean,
+        textStyle: CastMediaRequest.TextStyle?,
+    ): CastMediaRequest {
+        val vm = viewModel!!
+        return mediaBuilder.build(
+            video = video,
+            headers = CastMediaBuilder.sourceHeaders(video, vm.currentSource.value, vm.isEpisodeOnline() == true),
+            metadata = CastMediaBuilder.Metadata(
+                title = vm.currentAnime.value?.title.orEmpty(),
+                subtitle = vm.currentEpisode.value?.name.orEmpty(),
+                imageUrl = vm.currentAnime.value?.thumbnailUrl,
+                durationSeconds = vm.mpv.getPropertyDouble("duration")?.takeIf { it > 0 },
+            ),
+            activeSubtitleIndex = activeSubtitleIndex(vm, video),
+            lanHost = lanHost,
+            startPositionSeconds = mpv?.getPropertyDouble("time-pos") ?: 0.0,
+            autoplay = autoplay,
+            textStyle = textStyle,
+        )
+    }
+
+    /** The external subtitle mpv shows now: mpv names `sub-add`ed tracks after [Video.subtitleTracks] langs. */
+    private fun activeSubtitleIndex(vm: PlayerViewModel, video: Video): Int? {
+        val selectedId = vm.selectedSubtitles.value.first.takeIf { it > 0 } ?: return null
+        val selected = vm.subtitleTracks.value.firstOrNull { it.id == selectedId } ?: return null
+        return CastMediaBuilder.subtitleIndexNamed(video, selected.name)
     }
 
     private val directController: DirectCastController? by lazy {
@@ -374,7 +404,7 @@ class CastManager(
         if (backend == CastBackend.DIRECT) return loadDirectMedia()
         if (!isCastApiAvailable || isLoadingMedia) return
         val remoteMediaClient = castSession?.remoteMediaClient ?: return
-        if (mediaBuilder == null || viewModel == null) return
+        if (viewModel == null) return
 
         activity.lifecycleScope.launch {
             try {
@@ -386,10 +416,9 @@ class CastManager(
                 val hosterState = viewModel!!.hosterState.value.getOrNull(selectedHosterIndex) as? HosterState.Ready
                 val video = hosterState?.videoList?.getOrNull(selectedVideoIndex) ?: return@launch
 
-                val request = mediaBuilder!!.build(
+                val request = buildPlayerRequest(
                     video = video,
                     lanHost = LanAddress.current()?.address ?: "127.0.0.1",
-                    startPositionSeconds = mpv?.getPropertyDouble("time-pos") ?: 0.0,
                     autoplay = autoplayEnabled,
                     textStyle = null,
                 )
@@ -408,7 +437,7 @@ class CastManager(
                     showAddedToQueueToast()
                 } else {
                     remoteMediaClient.load(loadRequest)
-                    recordNowPlaying()
+                    recordNowPlaying(request)
                     updateQueueItems()
                 }
                 _castState.value = CastState.CONNECTED
@@ -1110,7 +1139,6 @@ class CastManager(
 
     private fun loadDirectMedia() {
         val session = directController?.session?.value ?: return
-        val builder = mediaBuilder ?: return
         val viewModel = viewModel ?: return
         if (isLoadingMedia) return
         isLoadingMedia = true
@@ -1120,15 +1148,14 @@ class CastManager(
                 val (hosterIndex, videoIndex) = viewModel.selectedHosterVideoIndex.value
                 val hoster = viewModel.hosterState.value.getOrNull(hosterIndex) as? HosterState.Ready
                 val video = hoster?.videoList?.getOrNull(videoIndex) ?: return@launch
-                val request = builder.build(
+                val request = buildPlayerRequest(
                     video = video,
                     lanHost = session.localAddress.hostAddress ?: return@launch,
-                    startPositionSeconds = mpv?.getPropertyDouble("time-pos") ?: 0.0,
                     autoplay = true,
                     textStyle = getDefaultSubtitleSettings().toCastTextStyle(),
                 )
                 session.load(request)
-                recordNowPlaying()
+                recordNowPlaying(request)
                 // Speed is not part of LOAD; carry over the one the player is set to.
                 mpv?.getPropertyDouble("speed")?.takeIf { it != 1.0 }?.let { setSpeed(it.toFloat()) }
             } catch (e: Exception) {
@@ -1158,14 +1185,5 @@ class CastManager(
         activity.runOnUiThread { Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
     }
 
-    fun getDefaultSubtitleSettings(): SubtitleSettings {
-        return SubtitleSettings(
-            fontSize = subtitlePreferences.fontSize().get().sp,
-            textColor = Color(subtitlePreferences.textColor().get()),
-            backgroundColor = Color(subtitlePreferences.backgroundColor().get()),
-            shadowRadius = subtitlePreferences.shadowRadius().get().dp,
-            fontFamily = subtitlePreferences.getFontFamily(),
-            borderStyle = subtitlePreferences.getBorderStyle(),
-        )
-    }
+    fun getDefaultSubtitleSettings(): SubtitleSettings = subtitlePreferences.subtitleSettings()
 }

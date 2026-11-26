@@ -15,7 +15,11 @@ import kotlinx.coroutines.flow.asStateFlow
 @SingleIn(AppScope::class)
 class CastNowPlaying {
 
-    data class Episode(val animeId: Long, val episodeId: Long)
+    /**
+     * @param subtitleName the name of the subtitle track the receiver shows, so the next episode
+     * the tracker loads keeps the same language.
+     */
+    data class Episode(val animeId: Long, val episodeId: Long, val subtitleName: String? = null)
 
     private val _episode = MutableStateFlow<Episode?>(null)
     val episode: StateFlow<Episode?> = _episode.asStateFlow()

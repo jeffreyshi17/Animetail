@@ -3,6 +3,8 @@ package eu.kanade.tachiyomi.ui.player.settings
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import eu.kanade.tachiyomi.ui.player.cast.components.BorderStyle
 import eu.kanade.tachiyomi.ui.player.cast.components.SubtitleSettings
 import logcat.LogPriority
@@ -67,4 +69,14 @@ class CastSubtitlePreferences(
             BorderStyle.NONE
         }
     }
+
+    /** The saved subtitle look, as the cast subtitle settings show it. */
+    fun subtitleSettings(): SubtitleSettings = SubtitleSettings(
+        fontSize = fontSize().get().sp,
+        textColor = Color(textColor().get()),
+        backgroundColor = Color(backgroundColor().get()),
+        shadowRadius = shadowRadius().get().dp,
+        fontFamily = getFontFamily(),
+        borderStyle = getBorderStyle(),
+    )
 }
