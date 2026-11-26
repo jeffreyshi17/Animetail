@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.util
 import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.net.Uri
+import eu.kanade.tachiyomi.ui.player.cast.proxy.CastStreamProxy
 import fi.iki.elonen.NanoHTTPD
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
@@ -11,10 +12,13 @@ import java.net.URLConnection
 class LocalHttpServer(
     port: String,
     private val contentResolver: ContentResolver,
+    private val castProxy: CastStreamProxy,
 ) : NanoHTTPD(port.toInt()) {
 
     @SuppressLint("Recycle")
     override fun serve(session: IHTTPSession): Response {
+        if (castProxy.handles(session.uri)) return castProxy.serve(session)
+
         val params = session.parameters
         val uriParam = params["uri"]?.get(0) ?: return newFixedLengthResponse(
             Response.Status.BAD_REQUEST,

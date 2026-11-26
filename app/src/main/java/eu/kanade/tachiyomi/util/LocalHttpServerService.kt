@@ -41,13 +41,14 @@ class LocalHttpServerService : Service() {
         }
     }
     private val prefserver by lazy { applicationContext.appGraph.localHttpServerHolder }
+    private val castProxyHolder by lazy { applicationContext.appGraph.castProxyHolder }
     private val port by lazy { prefserver.port().get() }
     var server: LocalHttpServer? = null
 
     override fun onCreate() {
         super.onCreate()
 
-        server = LocalHttpServer(port, contentResolver)
+        server = LocalHttpServer(port, contentResolver, castProxyHolder.proxy)
         try {
             server?.start()
             logcat(LogPriority.DEBUG) { "Local HTTP server started at $port" }

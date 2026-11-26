@@ -105,6 +105,8 @@ import eu.kanade.tachiyomi.network.NetworkPreferences
 import eu.kanade.tachiyomi.ui.base.delegate.SecureActivityDelegateImpl
 import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.ui.player.PlayerActivity
+import eu.kanade.tachiyomi.ui.player.cast.direct.DirectCastController
+import eu.kanade.tachiyomi.ui.player.cast.proxy.CastProxyHolder
 import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.DecoderPreferences
@@ -293,6 +295,8 @@ interface AppGraph : ViewModelGraph {
     val downloadPreferences: DownloadPreferences
     val storageManager: StorageManager
     val localHttpServerHolder: LocalHttpServerHolder
+    val castProxyHolder: CastProxyHolder
+    val directCastController: DirectCastController
     val torrentServerApi: TorrentServerApi
     val torrentServerUtils: TorrentServerUtils
 

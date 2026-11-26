@@ -24,7 +24,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,11 +36,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
-import com.google.android.gms.cast.framework.media.RemoteMediaClient
 import eu.kanade.presentation.theme.TachiyomiTheme
 import eu.kanade.tachiyomi.ui.player.CastManager
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import tachiyomi.i18n.tail.TLMR
 import tachiyomi.presentation.core.components.material.TextButton
 import tachiyomi.presentation.core.i18n.stringResource
@@ -52,19 +48,12 @@ fun CastPlayerDialog(
     onDismiss: () -> Unit,
 ) {
     val mediaInfo = castManager.currentMedia.collectAsState()
-    var client by remember { mutableStateOf<RemoteMediaClient?>(null) }
     val isPlaying by castManager.isPlaying.collectAsState()
     val volume = castManager.volume.collectAsState()
+    val position by castManager.positionSeconds.collectAsState()
+    val duration by castManager.durationSeconds.collectAsState()
+    var seekTarget by remember { mutableStateOf<Float?>(null) }
     val orientation = LocalConfiguration.current.orientation
-
-    LaunchedEffect(Unit) {
-        while (isActive) {
-            castManager.castSession?.remoteMediaClient?.let { remoteClient ->
-                client = remoteClient
-            }
-            delay(200)
-        }
-    }
 
     TachiyomiTheme {
         AlertDialog(
@@ -97,6 +86,27 @@ fun CastPlayerDialog(
                         style = MaterialTheme.typography.bodyMedium,
                     )
 
+                    if (duration > 0) {
+                        Column {
+                            Slider(
+                                value = seekTarget ?: position.toFloat().coerceIn(0f, duration.toFloat()),
+                                onValueChange = { seekTarget = it },
+                                onValueChangeFinished = {
+                                    seekTarget?.let { castManager.seekTo(it.toDouble()) }
+                                    seekTarget = null
+                                },
+                                valueRange = 0f..duration.toFloat(),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                text = "${formatCastTime(
+                                    seekTarget?.toDouble() ?: position,
+                                )} / ${formatCastTime(duration)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -107,13 +117,7 @@ fun CastPlayerDialog(
                         IconButton(onClick = { castManager.seekRelative(-30) }) {
                             Icon(Icons.Default.FastRewind, stringResource(TLMR.strings.cast_rewind_30s))
                         }
-                        IconButton(
-                            onClick = {
-                                client?.let { remoteClient ->
-                                    if (isPlaying) remoteClient.pause() else remoteClient.play()
-                                }
-                            },
-                        ) {
+                        IconButton(onClick = { castManager.togglePlayPause() }) {
                             Icon(
                                 if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 stringResource(if (isPlaying) TLMR.strings.cast_pause else TLMR.strings.cast_play),
@@ -171,4 +175,12 @@ fun CastPlayerDialog(
             },
         )
     }
+}
+
+internal fun formatCastTime(seconds: Double): String {
+    val total = seconds.toLong().coerceAtLeast(0)
+    val hours = total / 3600
+    val minutes = total / 60 % 60
+    val secs = total % 60
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, secs) else "%d:%02d".format(minutes, secs)
 }

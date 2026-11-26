@@ -28,6 +28,7 @@ import eu.kanade.tachiyomi.ui.player.PlayerOrientation
 import eu.kanade.tachiyomi.ui.player.VLC_PLAYER
 import eu.kanade.tachiyomi.ui.player.WEB_VIDEO_CASTER
 import eu.kanade.tachiyomi.ui.player.X_PLAYER
+import eu.kanade.tachiyomi.ui.player.cast.CastBackend
 import eu.kanade.tachiyomi.ui.player.loader.HosterCache
 import eu.kanade.tachiyomi.ui.player.loader.HosterPriority
 import eu.kanade.tachiyomi.ui.player.settings.HOSTER_CACHE_DURATIONS
@@ -403,6 +404,16 @@ data object PlayerSettingsPlayerScreen : SearchableSettings {
                 Preference.PreferenceItem.SwitchPreference(
                     preference = enableCast,
                     title = stringResource(TLMR.strings.pref_enable_cast),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    preference = playerPreferences.castBackend(),
+                    entries = persistentMapOf(
+                        CastBackend.AUTO to stringResource(TLMR.strings.cast_backend_auto),
+                        CastBackend.GOOGLE_CAST to stringResource(TLMR.strings.cast_backend_google),
+                        CastBackend.DIRECT to stringResource(TLMR.strings.cast_backend_direct),
+                    ),
+                    title = stringResource(TLMR.strings.pref_cast_backend),
+                    subtitle = stringResource(TLMR.strings.pref_cast_backend_summary),
                 ),
             ),
         )

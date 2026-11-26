@@ -5,6 +5,7 @@ import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 import eu.kanade.tachiyomi.ui.player.PlayerOrientation
 import eu.kanade.tachiyomi.ui.player.VideoAspect
+import eu.kanade.tachiyomi.ui.player.cast.CastBackend
 import tachiyomi.core.common.preference.PreferenceStore
 import tachiyomi.core.common.preference.getEnum
 
@@ -78,6 +79,8 @@ class PlayerPreferences(
     // External player
 
     fun enableCast() = preferenceStore.getBoolean("pref_enable_cast", false)
+
+    fun castBackend() = preferenceStore.getEnum("pref_cast_backend", CastBackend.AUTO)
 
     fun alwaysUseExternalPlayer() = preferenceStore.getBoolean(
         "pref_always_use_external_player",

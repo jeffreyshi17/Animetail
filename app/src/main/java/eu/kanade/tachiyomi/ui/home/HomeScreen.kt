@@ -69,6 +69,7 @@ import eu.kanade.tachiyomi.ui.library.manga.MangaLibrarySearchEvent
 import eu.kanade.tachiyomi.ui.library.manga.MangaLibraryTab
 import eu.kanade.tachiyomi.ui.more.MoreTab
 import eu.kanade.tachiyomi.ui.player.CastManager
+import eu.kanade.tachiyomi.ui.player.cast.CastBackend
 import eu.kanade.tachiyomi.ui.player.cast.CastMiniController
 import eu.kanade.tachiyomi.ui.updates.UpdatesTab
 import kotlinx.coroutines.flow.collectLatest
@@ -228,7 +229,8 @@ fun HomeScreen() {
     val castManager = remember { CastManager(activity!!, preferences) }
 
     LaunchedEffect(Unit) {
-        castManager.startDeviceDiscovery()
+        // The direct backend only scans while the cast sheet is open.
+        if (castManager.backend == CastBackend.GOOGLE_CAST) castManager.startDeviceDiscovery()
         castManager.reconnect()
     }
 

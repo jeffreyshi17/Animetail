@@ -1,78 +1,103 @@
 package eu.kanade.tachiyomi.ui.player.cast
 
-import android.content.Intent
 import android.net.Uri
-import aniyomi.core.common.torrent.TorrentServerApi
-import aniyomi.core.common.torrent.TorrentServerUtils
-import com.google.android.gms.cast.MediaInfo
-import com.google.android.gms.cast.MediaMetadata
-import com.google.android.gms.cast.MediaTrack
-import com.google.android.gms.common.images.WebImage
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.font.FontFamily
+import androidx.core.net.toUri
 import eu.kanade.tachiyomi.animesource.model.Video
+import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.ui.player.PlayerActivity
 import eu.kanade.tachiyomi.ui.player.PlayerViewModel
-import eu.kanade.tachiyomi.util.LocalHttpServerHolder
-import eu.kanade.tachiyomi.util.LocalHttpServerService
+import eu.kanade.tachiyomi.ui.player.cast.components.BorderStyle
+import eu.kanade.tachiyomi.ui.player.cast.components.SubtitleSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import mihon.app.di.appGraph
 import tachiyomi.core.common.util.system.logcat
-import java.net.Inet4Address
-import java.net.NetworkInterface
-import java.net.URLEncoder
 
+/**
+ * Turns the player's current [Video] into a [CastMediaRequest] the receiver can play: torrents become
+ * the local torrent server's stream, and local files, header-gated streams, HLS and subtitles go
+ * through the cast proxy (see [CastRouting]).
+ */
 class CastMediaBuilder(
     private val viewModel: PlayerViewModel,
     private val activity: PlayerActivity,
 ) {
-
-    private val player by lazy { activity.player }
     private val appGraph by lazy { activity.applicationContext.appGraph }
-    private val prefserver get() = appGraph.localHttpServerHolder
-    private val port by lazy { prefserver.port().get() }
+    private val proxyHolder get() = appGraph.castProxyHolder
     private val torrentServerApi get() = appGraph.torrentServerApi
     private val torrentServerUtils get() = appGraph.torrentServerUtils
 
-    suspend fun buildMediaInfo(video: Video): MediaInfo = withContext(Dispatchers.IO) {
-        var videoUrl = video.videoUrl
-        logcat(LogPriority.DEBUG) { "Video URL: $videoUrl" }
+    /**
+     * @param lanHost the phone's address on the network the receiver is on.
+     */
+    suspend fun build(
+        video: Video,
+        lanHost: String,
+        startPositionSeconds: Double,
+        autoplay: Boolean,
+        textStyle: CastMediaRequest.TextStyle?,
+    ): CastMediaRequest = withContext(Dispatchers.IO) {
+        val streamUrl = when {
+            video.videoUrl.startsWith("magnet") || video.videoUrl.endsWith(".torrent") ->
+                torrentLinkHandler(video.videoUrl, video.videoTitle)
 
-        videoUrl = when {
-            videoUrl.startsWith("content://") -> getLocalServerUrl(videoUrl)
-
-            videoUrl.startsWith(
-                "magnet",
-            ) ||
-                videoUrl.endsWith(".torrent") -> torrentLinkHandler(videoUrl, video.videoTitle)
-
-            else -> videoUrl
+            else -> video.videoUrl
         }
+        val headers = sourceHeaders(video)
+        val contentType = contentType(streamUrl)
+        val routed = proxyHolder.route(
+            streamUrl = streamUrl,
+            headers = headers,
+            contentType = contentType,
+            subtitleUrls = video.subtitleTracks.map { it.url },
+            lanHost = lanHost,
+        )
+        logcat(LogPriority.DEBUG) { "Cast: $contentType, proxied=${routed.streamUrl != streamUrl}" }
 
-        videoUrl = formatUrlForCast(videoUrl)
-
-        val contentType = when {
-            videoUrl.contains(".m3u8") -> "application/x-mpegURL"
-            videoUrl.contains(".mpd") -> "application/dash+xml"
-            else -> "video/mp4"
-        }
-
-        MediaInfo.Builder(videoUrl)
-            .setContentType(contentType)
-            .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-            .addMetadata(video)
-            .addTracks(video)
-            .setStreamDuration((viewModel.mpv.getPropertyInt("duration") ?: 0).toLong() * 1000)
-            .build()
+        CastMediaRequest(
+            url = routed.streamUrl,
+            contentType = contentType,
+            title = viewModel.currentAnime.value?.title.orEmpty(),
+            subtitle = viewModel.currentEpisode.value?.name.orEmpty(),
+            imageUrl = viewModel.currentAnime.value?.thumbnailUrl,
+            durationSeconds = viewModel.mpv.getPropertyDouble("duration")?.takeIf { it > 0 },
+            startPositionSeconds = startPositionSeconds,
+            autoplay = autoplay,
+            textTracks = video.subtitleTracks.zip(routed.subtitleUrls) { track, url ->
+                CastMediaRequest.TextTrack(url = url, name = track.lang, language = null)
+            },
+            activeTextTrackIndex = activeSubtitleIndex(video),
+            textTrackStyle = textStyle,
+        )
     }
 
-    private fun formatUrlForCast(url: String): String {
-        val ip = getLocalIpAddress()
-        return url
-            .replace("://localhost:", "://$ip:")
-            .replace("://127.0.0.1:", "://$ip:")
-            .replace("://localhost/", "://$ip/")
-            .replace("://127.0.0.1/", "://$ip/")
+    /** The headers mpv plays the video with (see `PlayerActivity.setHttpOptions`). */
+    private fun sourceHeaders(video: Video): Map<String, String> {
+        val headers = video.headers
+            ?: (viewModel.currentSource.value as? AnimeHttpSource)
+                ?.takeIf { viewModel.isEpisodeOnline() == true }
+                ?.headers
+            ?: return emptyMap()
+        return headers.toMultimap().mapValues { it.value.firstOrNull().orEmpty() }
+    }
+
+    private fun contentType(url: String): String {
+        if (url.startsWith("content://")) {
+            activity.contentResolver.getType(url.toUri())
+                ?.takeIf { it.startsWith("video/") }
+                ?.let { return it }
+        }
+        return CastMediaRequest.contentTypeFor(Uri.decode(url))
+    }
+
+    /** The external subtitle mpv shows now: mpv names `sub-add`ed tracks after [Video.subtitleTracks] langs. */
+    private fun activeSubtitleIndex(video: Video): Int? {
+        val selectedId = viewModel.selectedSubtitles.value.first.takeIf { it > 0 } ?: return null
+        val selected = viewModel.subtitleTracks.value.firstOrNull { it.id == selectedId } ?: return null
+        return video.subtitleTracks.indexOfFirst { it.lang == selected.name }.takeIf { it >= 0 }
     }
 
     private suspend fun torrentLinkHandler(videoUrl: String, quality: String): String {
@@ -97,65 +122,37 @@ class CastMediaBuilder(
         logcat(LogPriority.DEBUG) { "Torrent URL: $videoUrl" }
         return torrentServerUtils.getTorrentPlayLink(currentTorrent, index)
     }
+}
 
-    private fun MediaInfo.Builder.addMetadata(video: Video): MediaInfo.Builder {
-        val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
-            putString(MediaMetadata.KEY_TITLE, viewModel.currentAnime.value?.title ?: "")
-            putString(MediaMetadata.KEY_SUBTITLE, viewModel.currentEpisode.value?.name ?: "")
-            viewModel.currentAnime.value?.thumbnailUrl?.let { url ->
-                addImage(WebImage(Uri.parse(url)))
-            }
+/** Maps the cast subtitle settings to the receiver's text track style. */
+fun SubtitleSettings.toCastTextStyle(): CastMediaRequest.TextStyle {
+    val edgeType = when (borderStyle) {
+        BorderStyle.OUTLINE -> CastMediaRequest.TextStyle.EdgeType.OUTLINE
+
+        BorderStyle.DROP_SHADOW -> CastMediaRequest.TextStyle.EdgeType.DROP_SHADOW
+
+        BorderStyle.RAISED -> CastMediaRequest.TextStyle.EdgeType.RAISED
+
+        BorderStyle.DEPRESSED -> CastMediaRequest.TextStyle.EdgeType.DEPRESSED
+
+        BorderStyle.NONE -> when {
+            shadowRadius.value <= 0 -> CastMediaRequest.TextStyle.EdgeType.NONE
+            shadowRadius.value <= 3 -> CastMediaRequest.TextStyle.EdgeType.DEPRESSED
+            shadowRadius.value <= 6 -> CastMediaRequest.TextStyle.EdgeType.DROP_SHADOW
+            else -> CastMediaRequest.TextStyle.EdgeType.OUTLINE
         }
-        return setMetadata(metadata)
     }
-
-    private fun MediaInfo.Builder.addTracks(video: Video): MediaInfo.Builder {
-        val subtitleTracks = video.subtitleTracks.mapIndexed { trackIndex, sub ->
-            val formattedUrl = formatUrlForCast(sub.url)
-            logcat(LogPriority.DEBUG) { "Subtitle URL: $formattedUrl" }
-            MediaTrack.Builder(trackIndex.toLong(), MediaTrack.TYPE_TEXT)
-                .setContentId(formattedUrl)
-                .setSubtype(MediaTrack.SUBTYPE_SUBTITLES)
-                .setName(sub.lang)
-                .build()
-        }
-
-        val audioTracks = video.audioTracks.mapIndexed { trackIndex, audio ->
-            val formattedUrl = formatUrlForCast(audio.url)
-            MediaTrack.Builder((subtitleTracks.size + trackIndex).toLong(), MediaTrack.TYPE_AUDIO)
-                .setContentId(formattedUrl)
-                .setName(audio.lang)
-                .setContentType("application/x-mpegURL")
-                .build()
-        }
-
-        return setMediaTracks(subtitleTracks + audioTracks)
-    }
-
-    private fun getLocalServerUrl(contentUri: String): String {
-        val context = activity.applicationContext
-        context.startService(Intent(context, LocalHttpServerService::class.java))
-        val ip = getLocalIpAddress()
-        val encodedUri = URLEncoder.encode(contentUri, "UTF-8")
-        return "http://$ip:$port/file?uri=$encodedUri"
-    }
-
-    private fun getLocalIpAddress(): String {
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val intf = interfaces.nextElement()
-                val addresses = intf.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val addr = addresses.nextElement()
-                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        return addr.hostAddress ?: "127.0.0.1"
-                    }
-                }
-            }
-        } catch (ex: Exception) {
-            logcat(LogPriority.DEBUG) { "Error getting local IP address" }
-        }
-        return "127.0.0.1"
-    }
+    return CastMediaRequest.TextStyle(
+        fontScale = fontSize.value / 20f,
+        foregroundColor = textColor.toArgb(),
+        backgroundColor = backgroundColor.toArgb(),
+        edgeType = edgeType,
+        edgeColor = android.graphics.Color.BLACK,
+        fontGenericFamily = when (fontFamily) {
+            FontFamily.Serif -> CastMediaRequest.TextStyle.FontFamily.SERIF
+            FontFamily.Monospace -> CastMediaRequest.TextStyle.FontFamily.MONOSPACED_SANS_SERIF
+            FontFamily.Cursive -> CastMediaRequest.TextStyle.FontFamily.CURSIVE
+            else -> CastMediaRequest.TextStyle.FontFamily.SANS_SERIF
+        },
+    )
 }

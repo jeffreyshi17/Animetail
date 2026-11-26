@@ -66,6 +66,7 @@ import eu.kanade.tachiyomi.ui.player.PlayerUpdates
 import eu.kanade.tachiyomi.ui.player.PlayerViewModel
 import eu.kanade.tachiyomi.ui.player.Sheets
 import eu.kanade.tachiyomi.ui.player.VideoAspect
+import eu.kanade.tachiyomi.ui.player.cast.CastBackend
 import eu.kanade.tachiyomi.ui.player.cast.components.CastSheet
 import eu.kanade.tachiyomi.ui.player.controls.components.BrightnessOverlay
 import eu.kanade.tachiyomi.ui.player.controls.components.BrightnessSlider
@@ -491,6 +492,7 @@ fun PlayerControls(
                         castState = castState,
                         onCastClick = { showCastSheet = true },
                         isCastEnabled = { playerPreferences.enableCast().get() },
+                        useGoogleCastButton = castManager.backend == CastBackend.GOOGLE_CAST,
                     )
                 }
                 // Bottom right controls

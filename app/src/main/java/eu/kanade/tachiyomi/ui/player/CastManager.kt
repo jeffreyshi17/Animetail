@@ -6,13 +6,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewModelScope
-import com.google.android.gms.cast.MediaLoadRequestData
 import com.google.android.gms.cast.MediaMetadata
 import com.google.android.gms.cast.MediaQueueItem
 import com.google.android.gms.cast.MediaSeekOptions
@@ -20,10 +18,18 @@ import com.google.android.gms.cast.TextTrackStyle
 import com.google.android.gms.cast.framework.CastContext
 import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.media.RemoteMediaClient
+import eu.kanade.tachiyomi.ui.player.cast.CastBackend
 import eu.kanade.tachiyomi.ui.player.cast.CastMediaBuilder
 import eu.kanade.tachiyomi.ui.player.cast.CastSessionListener
-import eu.kanade.tachiyomi.ui.player.cast.components.BorderStyle
+import eu.kanade.tachiyomi.ui.player.cast.LanAddress
 import eu.kanade.tachiyomi.ui.player.cast.components.SubtitleSettings
+import eu.kanade.tachiyomi.ui.player.cast.direct.DirectCastController
+import eu.kanade.tachiyomi.ui.player.cast.direct.DirectCastSession
+import eu.kanade.tachiyomi.ui.player.cast.direct.DirectCastState
+import eu.kanade.tachiyomi.ui.player.cast.isPlayServicesAvailable
+import eu.kanade.tachiyomi.ui.player.cast.toCastTextStyle
+import eu.kanade.tachiyomi.ui.player.cast.toGmsLoadRequest
+import eu.kanade.tachiyomi.ui.player.cast.toGmsTextTrackStyle
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.HosterState
 import eu.kanade.tachiyomi.ui.player.settings.CastSubtitlePreferences
 import eu.kanade.tachiyomi.ui.player.settings.PlayerPreferences
@@ -32,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -134,21 +141,54 @@ class CastManager(
     private val _volume = MutableStateFlow(1f)
     val volume: StateFlow<Float> = _volume.asStateFlow()
 
-    init {
-        initializeCast()
+    private val _positionSeconds = MutableStateFlow(0.0)
+
+    /** The receiver's playback position, refreshed while a session is connected. */
+    val positionSeconds: StateFlow<Double> = _positionSeconds.asStateFlow()
+
+    private val _durationSeconds = MutableStateFlow(0.0)
+    val durationSeconds: StateFlow<Double> = _durationSeconds.asStateFlow()
+
+    private val preferredBackend = playerPreferences.castBackend().get()
+
+    /**
+     * The backend this screen casts with. Google Cast needs working Play services; without them
+     * `CastContext.getSharedInstance` throws and no cast route is ever discovered, so the automatic
+     * choice falls back to the direct CastV2 client.
+     */
+    val backend: CastBackend
+
+    private val directController: DirectCastController? by lazy {
+        if (backend == CastBackend.DIRECT) context.appGraph.directCastController else null
     }
 
-    private fun initializeCast() {
-        try {
-            android.util.Log.d("CastDebug", "initializeCast() called")
+    /** True while the direct backend looks for devices. */
+    val isScanning: StateFlow<Boolean> by lazy {
+        directController?.isScanning ?: MutableStateFlow(false)
+    }
+
+    init {
+        var resolved = CastBackend.resolve(
+            preference = preferredBackend,
+            playServicesAvailable = preferredBackend != CastBackend.DIRECT && isPlayServicesAvailable(context),
+        )
+        if (resolved == CastBackend.GOOGLE_CAST && !initializeCast() && preferredBackend == CastBackend.AUTO) {
+            resolved = CastBackend.DIRECT
+        }
+        backend = resolved
+        logcat(LogPriority.INFO) { "Cast backend: $backend (preference $preferredBackend)" }
+        if (backend == CastBackend.DIRECT) observeDirectSession()
+    }
+
+    private fun initializeCast(): Boolean {
+        return try {
             castContext = CastContext.getSharedInstance(context.applicationContext)
-            android.util.Log.d("CastDebug", "CastContext obtained: $castContext")
             sessionListener = CastSessionListener(this)
             registerSessionListener()
-            android.util.Log.d("CastDebug", "initializeCast() completed successfully")
+            true
         } catch (e: Exception) {
-            android.util.Log.e("CastDebug", "initializeCast() FAILED", e)
-            logcat(LogPriority.ERROR, e)
+            logcat(LogPriority.ERROR, e) { "Google Cast is unavailable" }
+            false
         }
     }
 
@@ -199,6 +239,7 @@ class CastManager(
     }
 
     fun cleanup() {
+        directController?.stopDiscovery()
         discoveryRetryJob?.cancel()
         mediaRouterCallback?.let { mediaRouter.removeCallback(it) }
         mediaRouterCallback = null
@@ -252,7 +293,11 @@ class CastManager(
         _availableDevices.value = _availableDevices.value.map { device ->
             device.copy(isSelected = false, isConnected = false)
         }
-        showConnectionErrorToast()
+        if (preferredBackend == CastBackend.AUTO) {
+            showToast(context.stringResource(TLMR.strings.cast_google_failed_try_direct))
+        } else {
+            showConnectionErrorToast()
+        }
     }
 
     fun updateCastState(state: CastState) {
@@ -294,6 +339,7 @@ class CastManager(
     // Media Loading & Progress Tracking
     @SuppressLint("SuspiciousIndentation")
     fun loadRemoteMedia() {
+        if (backend == CastBackend.DIRECT) return loadDirectMedia()
         if (!isCastApiAvailable || isLoadingMedia) return
         val remoteMediaClient = castSession?.remoteMediaClient ?: return
         if (mediaBuilder == null || viewModel == null) return
@@ -308,8 +354,15 @@ class CastManager(
                 val hosterState = viewModel!!.hosterState.value.getOrNull(selectedHosterIndex) as? HosterState.Ready
                 val video = hosterState?.videoList?.getOrNull(selectedVideoIndex) ?: return@launch
 
-                val mediaInfo = mediaBuilder!!.buildMediaInfo(video) // Ahora pasa el objeto `Video` directamente
-                val currentLocalPosition = (mpv?.getPropertyInt("time-pos") ?: 0).toLong()
+                val request = mediaBuilder!!.build(
+                    video = video,
+                    lanHost = LanAddress.current()?.address ?: "127.0.0.1",
+                    startPositionSeconds = mpv?.getPropertyDouble("time-pos") ?: 0.0,
+                    autoplay = autoplayEnabled,
+                    textStyle = null,
+                )
+                val loadRequest = request.toGmsLoadRequest()
+                val mediaInfo = loadRequest.mediaInfo!!
 
                 updateQueueItems()
                 if (remoteMediaClient.mediaQueue.itemCount > 0) {
@@ -322,13 +375,7 @@ class CastManager(
                     updateQueueItems()
                     showAddedToQueueToast()
                 } else {
-                    remoteMediaClient.load(
-                        MediaLoadRequestData.Builder()
-                            .setMediaInfo(mediaInfo)
-                            .setAutoplay(autoplayEnabled)
-                            .setCurrentTime(currentLocalPosition * 1000)
-                            .build(),
-                    )
+                    remoteMediaClient.load(loadRequest)
                     updateQueueItems()
                 }
                 _castState.value = CastState.CONNECTED
@@ -365,19 +412,39 @@ class CastManager(
     private fun startTrackingCastProgress() {
         castProgressJob?.cancel()
         castProgressJob = activity.lifecycleScope.launch {
-            while (castSession?.isConnected == true) {
+            while (isSessionConnected()) {
                 val currentPosition = getCurrentCastPosition()
-                viewModel?.updateCastProgress(currentPosition.toFloat() / 1000)
-                delay(1000)
+                _positionSeconds.value = currentPosition / 1000.0
+                _durationSeconds.value = getCastDuration() / 1000.0
+                if (currentPosition > 0) viewModel?.updateCastProgress(currentPosition.toFloat() / 1000)
+                delay(500)
             }
         }
     }
 
-    private fun getCurrentCastPosition(): Long {
-        return castSession?.remoteMediaClient?.approximateStreamPosition ?: 0
+    private fun isSessionConnected(): Boolean = when (backend) {
+        CastBackend.DIRECT -> directController?.state?.value?.phase == DirectCastState.Phase.CONNECTED
+        else -> castSession?.isConnected == true
+    }
+
+    private fun getCurrentCastPosition(): Long = when (backend) {
+        CastBackend.DIRECT ->
+            directController?.state?.value
+                ?.estimatedPositionSeconds(System.currentTimeMillis())
+                ?.let { (it * 1000).toLong() }
+                ?: 0
+
+        else -> castSession?.remoteMediaClient?.approximateStreamPosition ?: 0
+    }
+
+    private fun getCastDuration(): Long = when (backend) {
+        CastBackend.DIRECT -> directController?.state?.value?.media?.durationSeconds?.let { (it * 1000).toLong() } ?: 0
+        else -> castSession?.remoteMediaClient?.mediaInfo?.streamDuration ?: 0
     }
 
     fun maintainCastSessionBackground() {
+        // The direct session keeps playing on the TV while the phone is locked or the player is closed.
+        if (backend == CastBackend.DIRECT) return
         castSession?.let { session ->
             if (session.isConnected) {
                 session.remoteMediaClient?.pause()
@@ -404,6 +471,10 @@ class CastManager(
     }
 
     fun reconnect() {
+        if (backend == CastBackend.DIRECT) {
+            if (isSessionConnected() && _castState.value != CastState.CONNECTED) onDirectConnected()
+            return
+        }
         if (!isCastApiAvailable) return
         try {
             castContext = CastContext.getSharedInstance(context.applicationContext)
@@ -437,7 +508,10 @@ class CastManager(
     }
 
     fun startDeviceDiscovery() {
-        android.util.Log.d("CastDebug", "startDeviceDiscovery() called")
+        if (backend == CastBackend.DIRECT) {
+            directController?.startDiscovery()
+            return
+        }
         acquireMulticastLock()
         discoveryRetryJob?.cancel()
 
@@ -589,6 +663,7 @@ class CastManager(
     private var connectionJob: Job? = null
 
     fun connectToDevice(deviceId: String) {
+        if (backend == CastBackend.DIRECT) return connectDirect(deviceId)
         try {
             val route = mediaRouter.routes.find { it.id == deviceId } ?: return
             if (route.id == castSession?.castDevice?.deviceId && castSession?.isConnected == true) return
@@ -650,11 +725,39 @@ class CastManager(
     }
 
     fun stop() {
-        castSession?.remoteMediaClient?.stop()
+        if (backend == CastBackend.DIRECT) {
+            directCommand { it.stopMedia() }
+        } else {
+            castSession?.remoteMediaClient?.stop()
+        }
         _isPlaying.value = false
     }
 
+    fun togglePlayPause() {
+        if (backend == CastBackend.DIRECT) {
+            val playing = directController?.state?.value?.isPlaying == true
+            directCommand { if (playing) it.pause() else it.play() }
+            return
+        }
+        castSession?.remoteMediaClient?.let { client -> if (client.isPlaying) client.pause() else client.play() }
+    }
+
+    fun seekTo(positionSeconds: Double) {
+        if (backend == CastBackend.DIRECT) {
+            directCommand { it.seek(positionSeconds) }
+            return
+        }
+        castSession?.remoteMediaClient?.seek(
+            MediaSeekOptions.Builder().setPosition((positionSeconds * 1000).toLong()).build(),
+        )
+    }
+
     fun setVolume(volume: Float) {
+        if (backend == CastBackend.DIRECT) {
+            _volume.value = volume.coerceIn(0f, 1f)
+            directCommand { it.setVolume(volume.toDouble()) }
+            return
+        }
         try {
             castSession?.let { session ->
                 val newVolume = volume.coerceIn(0f, 1f)
@@ -685,6 +788,10 @@ class CastManager(
     }
 
     fun seekRelative(offset: Int) {
+        if (backend == CastBackend.DIRECT) {
+            val position = getCurrentCastPosition() / 1000.0
+            return seekTo((position + offset).coerceAtLeast(0.0))
+        }
         castSession?.remoteMediaClient?.let { client ->
             val newPosition = client.approximateStreamPosition + (offset * 1000)
             client.seek(
@@ -724,6 +831,10 @@ class CastManager(
     }
 
     fun endSession() {
+        if (backend == CastBackend.DIRECT) {
+            activity.lifecycleScope.launch { directController?.stop() }
+            return
+        }
         val mSessionManager = castContext!!.sessionManager
         mSessionManager.endCurrentSession(true)
         reset()
@@ -740,6 +851,13 @@ class CastManager(
             return
         }
         lastAppliedSettings = settings
+
+        if (backend == CastBackend.DIRECT) {
+            subtitlePreferences.saveTextTrackStyle(settings)
+            val activeTracks = directController?.state?.value?.media?.activeTrackIds.orEmpty()
+            directCommand { it.setTextTracks(settings.toCastTextStyle(), activeTracks) }
+            return
+        }
 
         subtitleSettingsJob = activity.lifecycleScope.launch {
             try {
@@ -766,49 +884,16 @@ class CastManager(
 
                 subtitlePreferences.saveTextTrackStyle(settings)
 
-                val textTrackStyle = TextTrackStyle().apply {
-                    fontScale = settings.fontSize.value / 20f
-                    foregroundColor = settings.textColor.toArgb()
-                    backgroundColor = settings.backgroundColor.toArgb()
-                    windowColor = android.graphics.Color.TRANSPARENT
-
-                    if (settings.shadowRadius.value > 0) {
-                        edgeColor = android.graphics.Color.BLACK
-                        edgeType = when {
-                            settings.shadowRadius.value <= 3 -> TextTrackStyle.EDGE_TYPE_DEPRESSED
-                            settings.shadowRadius.value <= 6 -> TextTrackStyle.EDGE_TYPE_DROP_SHADOW
-                            else -> TextTrackStyle.EDGE_TYPE_OUTLINE
-                        }
-                    } else {
-                        edgeType = TextTrackStyle.EDGE_TYPE_NONE
-                    }
-
-                    when (settings.fontFamily) {
-                        FontFamily.Default -> setFontFamily("SANS_SERIF")
-                        FontFamily.SansSerif -> setFontFamily("SANS_SERIF")
-                        FontFamily.Serif -> setFontFamily("SERIF")
-                        FontFamily.Monospace -> setFontFamily("MONOSPACE")
-                        FontFamily.Cursive -> setFontFamily("CURSIVE")
-                        else -> setFontFamily("SANS_SERIF")
-                    }
-
+                val textTrackStyle = settings.toCastTextStyle().toGmsTextTrackStyle().apply {
                     fontStyle = TextTrackStyle.FONT_STYLE_NORMAL
-                    fontGenericFamily = when (settings.fontFamily) {
-                        FontFamily.SansSerif -> TextTrackStyle.FONT_FAMILY_SANS_SERIF
-                        FontFamily.Serif -> TextTrackStyle.FONT_FAMILY_SERIF
-                        FontFamily.Monospace -> TextTrackStyle.FONT_FAMILY_MONOSPACED_SANS_SERIF
-                        FontFamily.Cursive -> TextTrackStyle.FONT_FAMILY_CURSIVE
-                        else -> TextTrackStyle.FONT_FAMILY_SANS_SERIF
-                    }
-
-                    if (settings.borderStyle != BorderStyle.NONE) {
-                        edgeType = when (settings.borderStyle) {
-                            BorderStyle.OUTLINE -> TextTrackStyle.EDGE_TYPE_OUTLINE
-                            BorderStyle.DROP_SHADOW -> TextTrackStyle.EDGE_TYPE_DROP_SHADOW
-                            BorderStyle.RAISED -> TextTrackStyle.EDGE_TYPE_RAISED
-                            BorderStyle.DEPRESSED -> TextTrackStyle.EDGE_TYPE_DEPRESSED
-                        }
-                    }
+                    setFontFamily(
+                        when (settings.fontFamily) {
+                            FontFamily.Serif -> "SERIF"
+                            FontFamily.Monospace -> "MONOSPACE"
+                            FontFamily.Cursive -> "CURSIVE"
+                            else -> "SANS_SERIF"
+                        },
+                    )
                 }
 
                 val wasPlaying = client.isPlaying
@@ -881,6 +966,124 @@ class CastManager(
                 subtitleSettingsJob = null
             }
         }
+    }
+
+    // region Direct (Play-services-free) backend
+
+    private var reportedReceiverError: Int? = null
+
+    private fun observeDirectSession() {
+        val controller = directController ?: return
+        combine(controller.devices, controller.device, controller.state) { devices, current, state ->
+            val connectedId = current?.id?.takeIf { state?.phase == DirectCastState.Phase.CONNECTED }
+            val all = if (current != null && devices.none { it.id == current.id }) devices + current else devices
+            all.map { device ->
+                CastDevice(
+                    id = device.id,
+                    name = device.name,
+                    isConnected = device.id == connectedId,
+                    isSelected = device.id == current?.id,
+                )
+            }
+        }.onEach { _availableDevices.value = it }.launchIn(activity.lifecycleScope)
+
+        controller.state.onEach { state ->
+            val connected = state?.phase == DirectCastState.Phase.CONNECTED
+            when {
+                connected && _castState.value != CastState.CONNECTED -> onDirectConnected()
+                !connected && _castState.value == CastState.CONNECTED -> onSessionEnded()
+            }
+            if (state != null) onDirectStatus(state)
+        }.launchIn(activity.lifecycleScope)
+    }
+
+    private fun onDirectConnected() {
+        updateCastState(CastState.CONNECTED)
+        startTrackingCastProgress()
+        // A session we just started has nothing loaded: send what the player shows now.
+        if (directController?.state?.value?.media == null) loadRemoteMedia()
+    }
+
+    private fun onDirectStatus(state: DirectCastState) {
+        val media = state.media
+        _isPlaying.value = state.isPlaying
+        state.volumeLevel?.let { _volume.value = it.toFloat() }
+        _currentMedia.value = CastMedia(
+            title = media?.title ?: viewModel?.currentAnime?.value?.title.orEmpty(),
+            subtitle = media?.subtitle ?: viewModel?.currentEpisode?.value?.name.orEmpty(),
+            thumbnail = media?.imageUrl ?: viewModel?.currentAnime?.value?.thumbnailUrl,
+        )
+        if (media?.idleReason == "ERROR" && reportedReceiverError != media.mediaSessionId) {
+            reportedReceiverError = media.mediaSessionId
+            showLoadErrorToast()
+        }
+    }
+
+    private fun connectDirect(deviceId: String) {
+        val controller = directController ?: return
+        val device = controller.devices.value.firstOrNull { it.id == deviceId } ?: return
+        if (controller.device.value?.id == deviceId && isSessionConnected()) return
+        connectionJob?.cancel()
+        connectionJob = activity.lifecycleScope.launch {
+            _castState.value = CastState.CONNECTING
+            try {
+                controller.connect(device)
+            } catch (e: Exception) {
+                logcat(LogPriority.ERROR, e) { "Direct cast: could not connect to ${device.name} (${device.host})" }
+                _castState.value = CastState.DISCONNECTED
+                showConnectionErrorToast()
+            }
+        }
+    }
+
+    /** Adds a receiver by IP for networks where discovery finds nothing. Returns false if none answered. */
+    suspend fun addDeviceByIp(host: String): Boolean = directController?.addDeviceByIp(host) != null
+
+    private fun loadDirectMedia() {
+        val session = directController?.session?.value ?: return
+        val builder = mediaBuilder ?: return
+        val viewModel = viewModel ?: return
+        if (isLoadingMedia) return
+        isLoadingMedia = true
+        _isLoading.value = true
+        activity.lifecycleScope.launch {
+            try {
+                val (hosterIndex, videoIndex) = viewModel.selectedHosterVideoIndex.value
+                val hoster = viewModel.hosterState.value.getOrNull(hosterIndex) as? HosterState.Ready
+                val video = hoster?.videoList?.getOrNull(videoIndex) ?: return@launch
+                val request = builder.build(
+                    video = video,
+                    lanHost = session.localAddress.hostAddress ?: return@launch,
+                    startPositionSeconds = mpv?.getPropertyDouble("time-pos") ?: 0.0,
+                    autoplay = true,
+                    textStyle = getDefaultSubtitleSettings().toCastTextStyle(),
+                )
+                session.load(request)
+            } catch (e: Exception) {
+                logcat(LogPriority.ERROR, e) { "Direct cast: load failed" }
+                showToast(context.stringResource(TLMR.strings.cast_receiver_error, e.message.orEmpty()))
+            } finally {
+                isLoadingMedia = false
+                _isLoading.value = false
+            }
+        }
+    }
+
+    private fun directCommand(command: suspend (DirectCastSession) -> Unit) {
+        val session = directController?.session?.value ?: return
+        activity.lifecycleScope.launch {
+            try {
+                command(session)
+            } catch (e: Exception) {
+                logcat(LogPriority.WARN, e) { "Direct cast command failed" }
+            }
+        }
+    }
+
+    // endregion
+
+    private fun showToast(message: String) {
+        activity.runOnUiThread { Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
     }
 
     fun getDefaultSubtitleSettings(): SubtitleSettings {

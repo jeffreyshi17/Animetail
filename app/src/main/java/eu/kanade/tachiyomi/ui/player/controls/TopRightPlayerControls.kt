@@ -36,6 +36,7 @@ import androidx.mediarouter.app.MediaRouteButton
 import com.google.android.gms.cast.framework.CastButtonFactory
 import eu.kanade.tachiyomi.ui.player.CastManager
 import eu.kanade.tachiyomi.ui.player.cast.CustomCastThemeFactory
+import eu.kanade.tachiyomi.ui.player.cast.components.CastButton
 import eu.kanade.tachiyomi.ui.player.controls.components.AutoPlaySwitch
 import eu.kanade.tachiyomi.ui.player.controls.components.ControlsButton
 import tachiyomi.presentation.core.components.material.padding
@@ -66,6 +67,8 @@ fun TopRightPlayerControls(
     castState: CastManager.CastState,
     onCastClick: () -> Unit,
     isCastEnabled: () -> Boolean,
+    /** The Google Cast SDK's own route button; the direct backend uses [CastButton] and the cast sheet. */
+    useGoogleCastButton: Boolean,
 
     modifier: Modifier = Modifier,
 ) {
@@ -81,7 +84,13 @@ fun TopRightPlayerControls(
                 .padding(vertical = MaterialTheme.padding.medium, horizontal = MaterialTheme.padding.mediumSmall)
                 .size(width = 48.dp, height = 24.dp),
         )
-        if (isCastEnabled()) {
+        if (isCastEnabled() && !useGoogleCastButton) {
+            CastButton(
+                castState = castState,
+                onClick = onCastClick,
+                modifier = Modifier.padding(horizontal = MaterialTheme.padding.extraSmall),
+            )
+        } else if (isCastEnabled()) {
             AndroidView(
                 factory = { ctx ->
                     MediaRouteButton(ctx).apply {

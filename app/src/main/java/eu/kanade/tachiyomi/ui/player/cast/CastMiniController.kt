@@ -27,10 +27,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -44,11 +42,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import com.google.android.gms.cast.framework.media.RemoteMediaClient
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.ui.player.CastManager
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import eu.kanade.tachiyomi.ui.player.cast.components.CastPlayerDialog
 
 @Composable
 fun CastMiniController(
@@ -61,25 +57,18 @@ fun CastMiniController(
     val currentMedia by castManager.currentMedia.collectAsState()
     val isPlaying by castManager.isPlaying.collectAsState()
 
-    var client by remember { mutableStateOf<RemoteMediaClient?>(null) }
-    var currentPosition by remember { mutableLongStateOf(0L) }
-    var duration by remember { mutableLongStateOf(0L) }
-
-    LaunchedEffect(Unit) {
-        while (isActive) {
-            castManager.castSession?.remoteMediaClient?.let { remoteClient ->
-                client = remoteClient
-                currentPosition = remoteClient.approximateStreamPosition
-                duration = remoteClient.mediaInfo?.streamDuration ?: 0L
-            }
-            delay(200)
-        }
-    }
+    val currentPosition by castManager.positionSeconds.collectAsState()
+    val duration by castManager.durationSeconds.collectAsState()
+    var showDirectControls by remember { mutableStateOf(false) }
 
     val animatedProgress by animateFloatAsState(
-        targetValue = (currentPosition.toFloat() / duration.coerceAtLeast(1)).coerceIn(0f, 1f),
+        targetValue = (currentPosition / duration.coerceAtLeast(1.0)).toFloat().coerceIn(0f, 1f),
         label = "progress",
     )
+
+    if (showDirectControls) {
+        CastPlayerDialog(castManager = castManager, onDismiss = { showDirectControls = false })
+    }
 
     Surface(
         modifier = modifier,
@@ -91,6 +80,11 @@ fun CastMiniController(
                 .fillMaxWidth()
                 .clickable(
                     onClick = {
+                        // The expanded controls are the Google Cast SDK's; the direct backend has its dialog.
+                        if (castManager.backend != CastBackend.GOOGLE_CAST) {
+                            showDirectControls = true
+                            return@clickable
+                        }
                         context.startActivity(
                             Intent(context, ExpandedControlsActivity::class.java)
                                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -198,11 +192,7 @@ fun CastMiniController(
                     }
 
                     IconButton(
-                        onClick = {
-                            client?.let { remoteClient ->
-                                if (isPlaying) remoteClient.pause() else remoteClient.play()
-                            }
-                        },
+                        onClick = { castManager.togglePlayPause() },
                         modifier = Modifier.size(48.dp),
                     ) {
                         Icon(

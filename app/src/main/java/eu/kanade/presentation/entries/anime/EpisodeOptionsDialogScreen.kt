@@ -73,6 +73,9 @@ import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.ui.main.MainActivity
+import eu.kanade.tachiyomi.ui.player.cast.CastBackend
+import eu.kanade.tachiyomi.ui.player.cast.CastMediaRequest
+import eu.kanade.tachiyomi.ui.player.cast.isPlayServicesAvailable
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.HosterState
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.QualitySheetHosterContent
 import eu.kanade.tachiyomi.ui.player.controls.components.sheets.QualitySheetVideoContent
@@ -88,6 +91,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import logcat.LogPriority
 import mihon.app.di.appGraph
+import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.launchUI
 import tachiyomi.core.common.util.lang.withIOContext
@@ -608,6 +612,8 @@ private fun VideoList(
                                     episode.lastSecondSeen,
                                     anime.thumbnailUrl.orEmpty(),
                                     currentVideo.videoUrl,
+                                    currentVideo.headers?.toMultimap()?.mapValues { it.value.firstOrNull().orEmpty() }
+                                        .orEmpty(),
                                 )
                             } else {
                                 context.toast("Cast is disabled")
@@ -771,15 +777,25 @@ private fun ClickableRow(
 
 // Start tail cast
 
-private fun sendChaptersToCast(
+private suspend fun sendChaptersToCast(
     context: Context,
     title: String,
     episode: String,
     lastSecondSeen: Long,
     image: String,
     videoUrl: String,
+    headers: Map<String, String>,
 ) {
-    val castSession = CastContext.getSharedInstance(context).sessionManager.currentCastSession
+    val backend = CastBackend.resolve(
+        preference = context.appGraph.playerPreferences.castBackend().get(),
+        playServicesAvailable = isPlayServicesAvailable(context),
+    )
+    if (backend == CastBackend.DIRECT) {
+        sendToDirectCast(context, title, episode, lastSecondSeen, image, videoUrl, headers)
+        return
+    }
+    val castSession = runCatching { CastContext.getSharedInstance(context).sessionManager.currentCastSession }
+        .getOrNull()
     val remoteMediaClient = castSession?.remoteMediaClient
     if (castSession == null || !castSession.isConnected) {
         Toast.makeText(context, "Cast is not connected", Toast.LENGTH_SHORT).show()
@@ -819,6 +835,47 @@ private fun sendChaptersToCast(
         }
     } else {
         Toast.makeText(context, "remoteMediaClient is null", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** Loads the episode on the direct (Play-services-free) cast session started from the player. */
+private suspend fun sendToDirectCast(
+    context: Context,
+    title: String,
+    episode: String,
+    lastSecondSeenMs: Long,
+    image: String,
+    videoUrl: String,
+    headers: Map<String, String>,
+) {
+    val session = context.appGraph.directCastController.session.value
+    if (session == null) {
+        context.toast(TLMR.strings.cast_not_connected)
+        return
+    }
+    try {
+        val contentType = CastMediaRequest.contentTypeFor(videoUrl)
+        val routed = context.appGraph.castProxyHolder.route(
+            streamUrl = videoUrl,
+            headers = headers,
+            contentType = contentType,
+            subtitleUrls = emptyList(),
+            lanHost = session.localAddress.hostAddress.orEmpty(),
+        )
+        session.load(
+            CastMediaRequest(
+                url = routed.streamUrl,
+                contentType = contentType,
+                title = title,
+                subtitle = episode,
+                imageUrl = image.ifEmpty { null },
+                durationSeconds = null,
+                startPositionSeconds = lastSecondSeenMs / 1000.0,
+                autoplay = true,
+            ),
+        )
+    } catch (e: Exception) {
+        context.toast(context.stringResource(TLMR.strings.cast_receiver_error, e.message.orEmpty()))
     }
 }
 
