@@ -120,6 +120,7 @@ import eu.kanade.tachiyomi.extension.manga.MangaExtensionManager
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.network.NetworkPreferences
 import eu.kanade.tachiyomi.ui.base.delegate.SecureActivityDelegate
+import eu.kanade.tachiyomi.ui.player.cast.CastSessionService
 import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
 import eu.kanade.tachiyomi.ui.player.settings.AudioPreferences
 import eu.kanade.tachiyomi.ui.player.settings.DecoderPreferences
@@ -373,6 +374,9 @@ class App : Application(), DefaultLifecycleObserver, SingletonImageLoader.Factor
                 }
             }
             .launchIn(ProcessLifecycleOwner.get().lifecycleScope)
+
+        // Casting notification and lock-screen controls for direct cast sessions, which outlive the player
+        CastSessionService.followSessions(this, graph.directCastController, scope)
 
         setAppCompatDelegateThemeMode(uiPreferences.themeMode.get())
 

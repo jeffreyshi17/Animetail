@@ -12,6 +12,7 @@ import eu.kanade.tachiyomi.util.system.buildNotificationChannelGroup
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.aniyomi.AYMR
+import tachiyomi.i18n.tail.TLMR
 
 /**
  * Class to manage the basic information of all the notifications used in the app.
@@ -91,6 +92,12 @@ object Notifications {
      */
     const val CHANNEL_HTTP_SERVER = "http_server_channel"
     const val ID_HTTP_SERVER = -901
+
+    /**
+     * Notification channel and id used while casting with the direct cast backend
+     */
+    const val CHANNEL_CAST = "cast_channel"
+    const val ID_CAST = -902
 
     /**
      * Notification channel and ids used for extension updates.
@@ -196,6 +203,10 @@ object Notifications {
                 // <-- AM (DISCORD)
                 buildNotificationChannel(CHANNEL_HTTP_SERVER, IMPORTANCE_LOW) {
                     setName(context.stringResource(AYMR.strings.pref_http_server_name))
+                    setShowBadge(false)
+                },
+                buildNotificationChannel(CHANNEL_CAST, IMPORTANCE_LOW) {
+                    setName(context.stringResource(TLMR.strings.cast_casting))
                     setShowBadge(false)
                 },
                 buildNotificationChannel(CHANNEL_EXTENSIONS_UPDATE, IMPORTANCE_DEFAULT) {
