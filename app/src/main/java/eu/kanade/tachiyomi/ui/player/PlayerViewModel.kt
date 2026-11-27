@@ -1279,6 +1279,16 @@ class PlayerViewModel(
         _pos.update { position }
     }
 
+    /**
+     * The receiver played the episode to its end: mark it seen as reaching the end locally does
+     * and, with [advance], start the next episode, which [CastManager] then sends to the receiver.
+     */
+    fun onCastFinished(advance: Boolean) {
+        if (advance && hasNextEpisode.value) return playNextEpisodeAfterEnding()
+        val totalSeconds = duration.value.toInt()
+        if (totalSeconds > 0) onSecondReached(totalSeconds, totalSeconds)
+    }
+
     fun resumeFromCast() {
         val lastPosition = _pos.value
 

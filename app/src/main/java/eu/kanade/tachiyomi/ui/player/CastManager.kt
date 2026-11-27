@@ -20,6 +20,7 @@ import eu.kanade.tachiyomi.ui.player.cast.CastBackend
 import eu.kanade.tachiyomi.ui.player.cast.CastMediaBuilder
 import eu.kanade.tachiyomi.ui.player.cast.CastMediaRequest
 import eu.kanade.tachiyomi.ui.player.cast.CastNowPlaying
+import eu.kanade.tachiyomi.ui.player.cast.CastPlaybackTracker
 import eu.kanade.tachiyomi.ui.player.cast.CastSessionListener
 import eu.kanade.tachiyomi.ui.player.cast.LanAddress
 import eu.kanade.tachiyomi.ui.player.cast.components.SubtitleSettings
@@ -205,6 +206,18 @@ class CastManager(
         return CastMediaBuilder.subtitleIndexNamed(video, selected.name)
     }
 
+    private val playbackTracker by lazy { context.appGraph.castPlaybackTracker }
+
+    /** Lets the tracker hand the end of the cast episode to this player, which loads the next itself. */
+    private val attachedPlayer = object : CastPlaybackTracker.AttachedPlayer {
+        override val castingEpisodeId: Long?
+            get() = viewModel?.takeIf { it.isCasting.value }?.currentEpisode?.value?.id
+
+        override fun onReceiverFinished(advance: Boolean) {
+            viewModel?.onCastFinished(advance)
+        }
+    }
+
     private val directController: DirectCastController? by lazy {
         if (backend == CastBackend.DIRECT) context.appGraph.directCastController else null
     }
@@ -225,8 +238,10 @@ class CastManager(
         backend = resolved
         logcat(LogPriority.INFO) { "Cast backend: $backend (preference $preferredBackend)" }
         if (backend == CastBackend.DIRECT) observeDirectSession()
+        playbackTracker.follow(backend)
         viewModel?.let { vm ->
             vm.castRemote = this
+            playbackTracker.attach(attachedPlayer)
             activity.lifecycleScope.launch { volume.collect(vm::onCastVolumeChanged) }
             // Every path that changes the cast state goes through _castState, so mirror it here.
             activity.lifecycleScope.launch {
@@ -300,6 +315,7 @@ class CastManager(
 
     fun cleanup() {
         if (viewModel?.castRemote === this) viewModel?.castRemote = null
+        playbackTracker.detach(attachedPlayer)
         directController?.stopDiscovery()
         discoveryRetryJob?.cancel()
         mediaRouterCallback?.let { mediaRouter.removeCallback(it) }

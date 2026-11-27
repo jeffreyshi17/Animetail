@@ -328,6 +328,7 @@
     <string name="cast_add_device_by_ip">Add device by IP</string>
     <string name="cast_device_ip_hint">IP address, e.g. 192.168.1.20</string>
     <string name="cast_device_not_found">No cast device answered at %1$s</string>
+    <string name="cast_next_episode_failed">Could not play the next episode on the TV</string>
     <string name="cast_google_failed_try_direct">Google Cast could not connect. Try Settings > Player > Casting backend > Direct.</string>
     <string name="cast_receiver_error">The TV could not play this video: %1$s</string>
     <string name="cast_speed_limited">The TV plays at most %1$sx, so it uses that speed</string>
