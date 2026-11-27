@@ -556,17 +556,6 @@ class CastManager(
         else -> castSession?.remoteMediaClient?.mediaInfo?.streamDuration ?: 0
     }
 
-    fun maintainCastSessionBackground() {
-        // The direct session keeps playing on the TV while the phone is locked or the player is closed.
-        if (backend == CastBackend.DIRECT) return
-        castSession?.let { session ->
-            if (session.isConnected) {
-                session.remoteMediaClient?.pause()
-                _isPlaying.value = false
-            }
-        }
-    }
-
     fun updateQueueItems(items: List<MediaQueueItem>? = null) {
         _queueItems.value = items ?: castSession?.remoteMediaClient?.mediaQueue?.let { queue ->
             (0 until queue.itemCount).mapNotNull { index ->

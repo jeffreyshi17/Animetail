@@ -478,8 +478,8 @@ class PlayerActivity : BaseActivity() {
     }
 
     override fun onPause() {
-        // Mantener sesión Cast activa
-        castManager.maintainCastSessionBackground()
+        // A cast keeps playing on the receiver while the player is in the background or closed;
+        // CastPlaybackTracker follows it from there.
         viewModel.saveCurrentEpisodeWatchingProgress()
 
         updateDiscordRPC(exitingPlayer = false)
@@ -1059,11 +1059,6 @@ class PlayerActivity : BaseActivity() {
                         castManager.apply {
                             if (!isInPictureInPictureMode) {
                                 unregisterSessionListener()
-                            }
-
-                            // Si está transmitiendo, mantener sesión activa
-                            if (castState.value == CastManager.CastState.CONNECTED) {
-                                maintainCastSessionBackground()
                             }
                         }
                         //
