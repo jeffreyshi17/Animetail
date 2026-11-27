@@ -744,6 +744,8 @@ class PlayerActivity : BaseActivity() {
         if (player.isExiting) return
         when (property) {
             "time-pos" -> {
+                // While casting, the receiver's position drives the seek bar (see CastManager).
+                if (viewModel.isCasting.value) return
                 viewModel.updatePlayBackPos(value.toFloat())
                 viewModel.setChapter(value.toFloat())
             }
@@ -777,6 +779,11 @@ class PlayerActivity : BaseActivity() {
         if (player.isExiting) return
         when (property) {
             "pause" -> {
+                // While casting the local player stays paused and the button mirrors the receiver.
+                if (viewModel.isCasting.value) {
+                    if (!value) mpv.setPropertyBoolean("pause", true)
+                    return
+                }
                 if (value) {
                     viewModel.pause()
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -978,14 +985,15 @@ class PlayerActivity : BaseActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
+            // While casting these step the TV's volume, so the phone's slider would be misleading.
             KeyEvent.KEYCODE_VOLUME_UP -> {
                 viewModel.changeVolumeBy(1)
-                viewModel.displayVolumeSlider()
+                if (!viewModel.isCasting.value) viewModel.displayVolumeSlider()
             }
 
             KeyEvent.KEYCODE_VOLUME_DOWN -> {
                 viewModel.changeVolumeBy(-1)
-                viewModel.displayVolumeSlider()
+                if (!viewModel.isCasting.value) viewModel.displayVolumeSlider()
             }
 
             KeyEvent.KEYCODE_DPAD_LEFT -> viewModel.handleLeftDoubleTap()
@@ -1469,6 +1477,14 @@ class PlayerActivity : BaseActivity() {
         runOnUiThread { setupPlayerOrientation() }
         setupChapters()
         setupTracks()
+
+        // A new episode while casting goes to the receiver; the local player stays paused.
+        if (viewModel.isCasting.value) {
+            runOnUiThread {
+                mpv.setPropertyBoolean("pause", true)
+                castManager.loadRemoteMedia()
+            }
+        }
 
         // aniSkip stuff
         viewModel.waitingSkipIntro = playerPreferences.waitingTimeIntroSkip().get()

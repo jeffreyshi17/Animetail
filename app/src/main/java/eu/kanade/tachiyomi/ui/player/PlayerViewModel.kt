@@ -304,6 +304,24 @@ class PlayerViewModel(
     val isLoadingTracks = MutableStateFlow(true)
     val isCasting = MutableStateFlow(false)
 
+    /** Drives the cast receiver; while casting, playback controls go here instead of to mpv. */
+    interface CastRemote {
+        fun play()
+        fun pause()
+        fun seekTo(positionSeconds: Double)
+        fun seekBy(offsetSeconds: Int)
+        fun stepVolume(delta: Float)
+    }
+
+    var castRemote: CastRemote? = null
+
+    private val activeCastRemote: CastRemote? get() = castRemote?.takeIf { isCasting.value }
+
+    /** Mirrors the receiver's play state so the play/pause button shows what the TV is doing. */
+    fun onCastPlayingChanged(playing: Boolean) {
+        _paused.update { !playing }
+    }
+
     private val _hosterList = MutableStateFlow<List<Hoster>>(emptyList())
     val hosterList = _hosterList.asStateFlow()
     private val _isLoadingHosters = MutableStateFlow(true)
@@ -774,7 +792,13 @@ class PlayerViewModel(
         }
     }
 
+    /** The user's play/pause toggle. Lifecycle pauses call [pause] directly and stay local. */
     fun pauseUnpause() {
+        activeCastRemote?.let {
+            if (paused.value) it.play() else it.pause()
+            _paused.update { paused -> !paused }
+            return
+        }
         if (paused.value) {
             unpause()
         } else {
@@ -868,10 +892,12 @@ class PlayerViewModel(
     }
 
     fun seekBy(offset: Int, precise: Boolean = false) {
+        activeCastRemote?.let { return it.seekBy(offset) }
         mpv.command("seek", offset.toString(), if (precise) "relative+exact" else "relative")
     }
 
     fun seekTo(position: Int, precise: Boolean = true) {
+        activeCastRemote?.let { return it.seekTo(position.coerceAtLeast(0).toDouble()) }
         if (position !in 0..(mpv.getPropertyInt("duration") ?: 0)) return
         mpv.command("seek", position.toString(), if (precise) "absolute" else "absolute+keyframes")
     }
@@ -888,6 +914,7 @@ class PlayerViewModel(
 
     val maxVolume: Int get() = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
     fun changeVolumeBy(change: Int) {
+        activeCastRemote?.let { return it.stepVolume(change.toFloat() / maxVolume) }
         val mpvVolume = mpv.getPropertyInt("volume") ?: 100
         if (volumeBoostCap > 0 && currentVolume.value == maxVolume) {
             if (mpvVolume == 100 && change < 0) changeVolumeTo(currentVolume.value + change)
@@ -1236,6 +1263,8 @@ class PlayerViewModel(
     }
 
     fun updateCastProgress(position: Float) {
+        // Saves watch progress like local playback does.
+        onSecondReached(position.toInt(), duration.value.toInt())
         _pos.update { position }
     }
 

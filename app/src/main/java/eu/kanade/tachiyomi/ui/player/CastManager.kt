@@ -56,7 +56,7 @@ import kotlin.coroutines.resume
 class CastManager(
     val activity: ComponentActivity,
     val preferenceStore: PreferenceStore,
-) {
+) : PlayerViewModel.CastRemote {
     enum class CastState {
         CONNECTED,
         DISCONNECTED,
@@ -178,6 +178,11 @@ class CastManager(
         backend = resolved
         logcat(LogPriority.INFO) { "Cast backend: $backend (preference $preferredBackend)" }
         if (backend == CastBackend.DIRECT) observeDirectSession()
+        viewModel?.let { vm ->
+            vm.castRemote = this
+            // Every path that changes the cast state goes through _castState, so mirror it here.
+            activity.lifecycleScope.launch { castState.collect { vm.isCasting.value = it == CastState.CONNECTED } }
+        }
     }
 
     private fun initializeCast(): Boolean {
@@ -239,6 +244,7 @@ class CastManager(
     }
 
     fun cleanup() {
+        if (viewModel?.castRemote === this) viewModel?.castRemote = null
         directController?.stopDiscovery()
         discoveryRetryJob?.cancel()
         mediaRouterCallback?.let { mediaRouter.removeCallback(it) }
@@ -417,10 +423,34 @@ class CastManager(
                 _positionSeconds.value = currentPosition / 1000.0
                 _durationSeconds.value = getCastDuration() / 1000.0
                 if (currentPosition > 0) viewModel?.updateCastProgress(currentPosition.toFloat() / 1000)
+                viewModel?.onCastPlayingChanged(isRemotePlaying())
                 delay(500)
             }
         }
     }
+
+    private fun isRemotePlaying(): Boolean = when (backend) {
+        CastBackend.DIRECT -> directController?.state?.value?.isPlaying == true
+        else -> castSession?.remoteMediaClient?.isPlaying == true
+    }
+
+    // region CastRemote: the player's own controls while casting
+
+    override fun play() {
+        if (backend == CastBackend.DIRECT) return directCommand { it.play() }
+        castSession?.remoteMediaClient?.play()
+    }
+
+    override fun pause() {
+        if (backend == CastBackend.DIRECT) return directCommand { it.pause() }
+        castSession?.remoteMediaClient?.pause()
+    }
+
+    override fun seekBy(offsetSeconds: Int) = seekRelative(offsetSeconds)
+
+    override fun stepVolume(delta: Float) = setVolume(_volume.value + delta)
+
+    // endregion
 
     private fun isSessionConnected(): Boolean = when (backend) {
         CastBackend.DIRECT -> directController?.state?.value?.phase == DirectCastState.Phase.CONNECTED
@@ -742,7 +772,7 @@ class CastManager(
         castSession?.remoteMediaClient?.let { client -> if (client.isPlaying) client.pause() else client.play() }
     }
 
-    fun seekTo(positionSeconds: Double) {
+    override fun seekTo(positionSeconds: Double) {
         if (backend == CastBackend.DIRECT) {
             directCommand { it.seek(positionSeconds) }
             return
