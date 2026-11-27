@@ -151,6 +151,10 @@ class DirectCastSession private constructor(
         CastV2Protocol.seek(it, mediaSessionId(), positionSeconds)
     }
 
+    suspend fun setPlaybackRate(rate: Double) = mediaRequest {
+        CastV2Protocol.setPlaybackRate(it, mediaSessionId(), rate)
+    }
+
     suspend fun stopMedia() = mediaRequest { CastV2Protocol.stopMedia(it, mediaSessionId()) }
 
     suspend fun setTextTracks(style: CastMediaRequest.TextStyle, activeTrackIds: List<Int>) =

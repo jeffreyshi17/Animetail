@@ -841,7 +841,11 @@ class PlayerActivity : BaseActivity() {
     internal fun onObserverEvent(property: String, value: Double) {
         if (player.isExiting) return
         when (property) {
-            "speed" -> viewModel.playbackSpeed.update { value.toFloat() }
+            "speed" -> {
+                viewModel.playbackSpeed.update { value.toFloat() }
+                // Every speed control sets mpv's speed; while casting the receiver follows it.
+                if (viewModel.isCasting.value) castManager.setSpeed(value.toFloat())
+            }
 
             "video-params/aspect" -> if (isPipSupportedAndEnabled) {
                 runCatching {
@@ -1478,11 +1482,12 @@ class PlayerActivity : BaseActivity() {
         setupChapters()
         setupTracks()
 
-        // A new episode while casting goes to the receiver; the local player stays paused.
+        // A new episode while casting goes to the receiver; the local player stays paused. Reopening
+        // the player on the episode the receiver already plays (from the cast banner) leaves it be.
         if (viewModel.isCasting.value) {
             runOnUiThread {
                 mpv.setPropertyBoolean("pause", true)
-                castManager.loadRemoteMedia()
+                if (!castManager.isCastingEpisode(viewModel.currentEpisode.value?.id)) castManager.loadRemoteMedia()
             }
         }
 

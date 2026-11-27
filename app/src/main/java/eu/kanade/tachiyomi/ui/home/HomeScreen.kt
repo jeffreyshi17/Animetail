@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.ui.home
 
-import androidx.activity.ComponentActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.graphics.ExperimentalAnimationGraphicsApi
@@ -10,7 +9,6 @@ import androidx.compose.animation.graphics.vector.AnimatedImageVector
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +17,6 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Home
@@ -34,7 +31,6 @@ import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,9 +64,6 @@ import eu.kanade.tachiyomi.ui.library.anime.AnimeLibraryTab
 import eu.kanade.tachiyomi.ui.library.manga.MangaLibrarySearchEvent
 import eu.kanade.tachiyomi.ui.library.manga.MangaLibraryTab
 import eu.kanade.tachiyomi.ui.more.MoreTab
-import eu.kanade.tachiyomi.ui.player.CastManager
-import eu.kanade.tachiyomi.ui.player.cast.CastBackend
-import eu.kanade.tachiyomi.ui.player.cast.CastMiniController
 import eu.kanade.tachiyomi.ui.updates.UpdatesTab
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -224,16 +217,6 @@ fun HomeScreen() {
     val resultEventBus = LocalResultEventBus.current
     val alwaysShowLabel by uiPreferences.bottomBarLabels.collectAsState()
 
-    val activity = context as? ComponentActivity
-    val preferences = appGraph.preferenceStore
-    val castManager = remember { CastManager(activity!!, preferences) }
-
-    LaunchedEffect(Unit) {
-        // The direct backend only scans while the cast sheet is open.
-        if (castManager.backend == CastBackend.GOOGLE_CAST) castManager.startDeviceDiscovery()
-        castManager.reconnect()
-    }
-
     val showHomeTab by uiPreferences.showHomeTab.collectAsState()
     val startScreenPref by uiPreferences.startScreen.collectAsState()
 
@@ -273,21 +256,6 @@ fun HomeScreen() {
             bottomBar = {
                 if (!tabletUi) {
                     Column {
-                        val isConnected =
-                            castManager.castState.collectAsState().value == CastManager.CastState.CONNECTED
-                        AnimatedVisibility(
-                            visible = isConnected,
-                            enter = expandVertically(),
-                            exit = shrinkVertically(),
-                        ) {
-                            CastMiniController(
-                                castManager = castManager,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                            )
-                        }
-
                         AnimatedVisibility(
                             visible = bottomNavVisible && tabNavigator.current != navStyle.moreTab,
                             enter = expandVertically(),

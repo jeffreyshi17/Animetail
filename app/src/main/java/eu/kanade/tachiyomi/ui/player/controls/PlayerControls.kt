@@ -67,6 +67,7 @@ import eu.kanade.tachiyomi.ui.player.PlayerViewModel
 import eu.kanade.tachiyomi.ui.player.Sheets
 import eu.kanade.tachiyomi.ui.player.VideoAspect
 import eu.kanade.tachiyomi.ui.player.cast.CastBackend
+import eu.kanade.tachiyomi.ui.player.cast.components.CastControlsScreen
 import eu.kanade.tachiyomi.ui.player.cast.components.CastSheet
 import eu.kanade.tachiyomi.ui.player.controls.components.BrightnessOverlay
 import eu.kanade.tachiyomi.ui.player.controls.components.BrightnessSlider
@@ -143,8 +144,10 @@ fun PlayerControls(
         paused,
         isSeeking,
         resetControls,
+        castState,
     ) {
-        if (controlsShown && !paused && !isSeeking) {
+        // While casting there is no video to uncover, so the controls stay up.
+        if (controlsShown && !paused && !isSeeking && castState != CastManager.CastState.CONNECTED) {
             delay(playerTimeToDisappear.toLong())
             viewModel.hideControls()
         }
@@ -703,6 +706,16 @@ fun PlayerControls(
 
         BrightnessOverlay(
             brightness = currentBrightness,
+        )
+    }
+
+    // While casting the local video is paused; the whole screen becomes the TV's remote.
+    if (castState == CastManager.CastState.CONNECTED) {
+        CastControlsScreen(
+            viewModel = viewModel,
+            castManager = castManager,
+            onBack = onBackPress,
+            onOpenCastSheet = { showCastSheet = true },
         )
     }
 

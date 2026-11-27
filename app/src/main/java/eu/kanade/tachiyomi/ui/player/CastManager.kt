@@ -20,9 +20,11 @@ import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.media.RemoteMediaClient
 import eu.kanade.tachiyomi.ui.player.cast.CastBackend
 import eu.kanade.tachiyomi.ui.player.cast.CastMediaBuilder
+import eu.kanade.tachiyomi.ui.player.cast.CastNowPlaying
 import eu.kanade.tachiyomi.ui.player.cast.CastSessionListener
 import eu.kanade.tachiyomi.ui.player.cast.LanAddress
 import eu.kanade.tachiyomi.ui.player.cast.components.SubtitleSettings
+import eu.kanade.tachiyomi.ui.player.cast.direct.CastV2Protocol
 import eu.kanade.tachiyomi.ui.player.cast.direct.DirectCastController
 import eu.kanade.tachiyomi.ui.player.cast.direct.DirectCastSession
 import eu.kanade.tachiyomi.ui.player.cast.direct.DirectCastState
@@ -139,7 +141,7 @@ class CastManager(
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
     private val _volume = MutableStateFlow(1f)
-    val volume: StateFlow<Float> = _volume.asStateFlow()
+    override val volume: StateFlow<Float> = _volume.asStateFlow()
 
     private val _positionSeconds = MutableStateFlow(0.0)
 
@@ -157,6 +159,21 @@ class CastManager(
      * choice falls back to the direct CastV2 client.
      */
     val backend: CastBackend
+
+    private val nowPlaying by lazy { context.appGraph.castNowPlaying }
+
+    /** The episode on the receiver, for the cast banner to reopen the player on. */
+    val nowPlayingEpisode: StateFlow<CastNowPlaying.Episode?> get() = nowPlaying.episode
+
+    /** Whether the receiver already plays [episodeId], so reopening the player must not reload it. */
+    fun isCastingEpisode(episodeId: Long?): Boolean =
+        episodeId != null && nowPlaying.episode.value?.episodeId == episodeId
+
+    private fun recordNowPlaying() {
+        val animeId = viewModel?.currentAnime?.value?.id ?: return
+        val episodeId = viewModel?.currentEpisode?.value?.id ?: return
+        nowPlaying.set(CastNowPlaying.Episode(animeId, episodeId))
+    }
 
     private val directController: DirectCastController? by lazy {
         if (backend == CastBackend.DIRECT) context.appGraph.directCastController else null
@@ -180,8 +197,16 @@ class CastManager(
         if (backend == CastBackend.DIRECT) observeDirectSession()
         viewModel?.let { vm ->
             vm.castRemote = this
+            activity.lifecycleScope.launch { volume.collect(vm::onCastVolumeChanged) }
             // Every path that changes the cast state goes through _castState, so mirror it here.
-            activity.lifecycleScope.launch { castState.collect { vm.isCasting.value = it == CastState.CONNECTED } }
+            activity.lifecycleScope.launch {
+                castState.collect {
+                    val casting = it == CastState.CONNECTED
+                    if (vm.isCasting.value && !casting) vm.onCastEnded()
+                    vm.isCasting.value = casting
+                    if (casting) vm.onCastVolumeChanged(_volume.value)
+                }
+            }
         }
     }
 
@@ -284,6 +309,7 @@ class CastManager(
     }
 
     fun onSessionEnded() {
+        nowPlaying.set(null)
         castProgressJob?.cancel()
         val lastPosition = getCurrentCastPosition()
         if (lastPosition > 0) viewModel?.updateCastProgress(lastPosition.toFloat() / 1000)
@@ -382,6 +408,7 @@ class CastManager(
                     showAddedToQueueToast()
                 } else {
                     remoteMediaClient.load(loadRequest)
+                    recordNowPlaying()
                     updateQueueItems()
                 }
                 _castState.value = CastState.CONNECTED
@@ -449,6 +476,18 @@ class CastManager(
     override fun seekBy(offsetSeconds: Int) = seekRelative(offsetSeconds)
 
     override fun stepVolume(delta: Float) = setVolume(_volume.value + delta)
+
+    override fun setSpeed(speed: Float) {
+        val rate = speed.toDouble().coerceIn(CastV2Protocol.MIN_PLAYBACK_RATE, CastV2Protocol.MAX_PLAYBACK_RATE)
+        if (rate != speed.toDouble() && !warnedAboutSpeedLimit) {
+            warnedAboutSpeedLimit = true
+            showToast(context.stringResource(TLMR.strings.cast_speed_limited, rate.toString()))
+        }
+        if (backend == CastBackend.DIRECT) return directCommand { it.setPlaybackRate(rate) }
+        castSession?.remoteMediaClient?.setPlaybackRate(rate)
+    }
+
+    private var warnedAboutSpeedLimit = false
 
     // endregion
 
@@ -782,7 +821,7 @@ class CastManager(
         )
     }
 
-    fun setVolume(volume: Float) {
+    override fun setVolume(volume: Float) {
         if (backend == CastBackend.DIRECT) {
             _volume.value = volume.coerceIn(0f, 1f)
             directCommand { it.setVolume(volume.toDouble()) }
@@ -1089,6 +1128,9 @@ class CastManager(
                     textStyle = getDefaultSubtitleSettings().toCastTextStyle(),
                 )
                 session.load(request)
+                recordNowPlaying()
+                // Speed is not part of LOAD; carry over the one the player is set to.
+                mpv?.getPropertyDouble("speed")?.takeIf { it != 1.0 }?.let { setSpeed(it.toFloat()) }
             } catch (e: Exception) {
                 logcat(LogPriority.ERROR, e) { "Direct cast: load failed" }
                 showToast(context.stringResource(TLMR.strings.cast_receiver_error, e.message.orEmpty()))

@@ -223,14 +223,17 @@ fun GestureHandler(
                 val brightnessGestureSens = 0.001f
                 val volumeGestureSens = 0.001f * viewModel.maxVolume
                 val mpvVolumeGestureSens = 0.001f * volumeBoostingCap
+                // Volume boost is mpv's own gain; while casting the receiver's volume is all there is.
                 val isIncreasingVolumeBoost: (Float) -> Boolean = {
-                    volumeBoostingCap > 0 &&
+                    !viewModel.isCasting.value &&
+                        volumeBoostingCap > 0 &&
                         currentVolume == viewModel.maxVolume &&
                         currentMPVVolume - 100 < volumeBoostingCap &&
                         it < 0
                 }
                 val isDecreasingVolumeBoost: (Float) -> Boolean = {
-                    volumeBoostingCap > 0 &&
+                    !viewModel.isCasting.value &&
+                        volumeBoostingCap > 0 &&
                         currentVolume == viewModel.maxVolume &&
                         currentMPVVolume - 100 in 1..volumeBoostingCap &&
                         it > 0

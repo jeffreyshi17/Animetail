@@ -122,6 +122,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
@@ -170,6 +171,7 @@ import java.io.InputStream
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.seconds
 private const val NETWORK_STREAM_ANIME_ID = Long.MIN_VALUE + 101
 private const val NETWORK_STREAM_EPISODE_ID = Long.MIN_VALUE + 102
@@ -311,6 +313,11 @@ class PlayerViewModel(
         fun seekTo(positionSeconds: Double)
         fun seekBy(offsetSeconds: Int)
         fun stepVolume(delta: Float)
+
+        /** Receiver volume, 0 to 1. */
+        val volume: StateFlow<Float>
+        fun setVolume(volume: Float)
+        fun setSpeed(speed: Float)
     }
 
     var castRemote: CastRemote? = null
@@ -320,6 +327,27 @@ class PlayerViewModel(
     /** Mirrors the receiver's play state so the play/pause button shows what the TV is doing. */
     fun onCastPlayingChanged(playing: Boolean) {
         _paused.update { !playing }
+    }
+
+    /** While casting, the volume slider and gestures show and change the receiver's volume. */
+    fun onCastVolumeChanged(level: Float) {
+        if (isCasting.value) currentVolume.update { (level * maxVolume).roundToInt() }
+    }
+
+    /** Sets and remembers the playback speed; while casting the receiver follows mpv's speed. */
+    fun changeSpeed(speed: Float) {
+        mpv.setPropertyDouble("speed", speed.toDouble())
+        playerPreferences.playerSpeed().set(speed)
+    }
+
+    /**
+     * Hands playback back to the phone. The local player was held paused while casting and the
+     * button mirrored the receiver, so it stays paused at the receiver's position and the button
+     * shows that, instead of claiming to play over a paused player.
+     */
+    fun onCastEnded() {
+        pause()
+        currentVolume.update { audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) }
     }
 
     private val _hosterList = MutableStateFlow<List<Hoster>>(emptyList())
@@ -929,6 +957,11 @@ class PlayerViewModel(
 
     fun changeVolumeTo(volume: Int) {
         val newVolume = volume.coerceIn(0..maxVolume)
+        activeCastRemote?.let {
+            it.setVolume(newVolume.toFloat() / maxVolume)
+            currentVolume.update { newVolume }
+            return
+        }
         audioManager.setStreamVolume(
             AudioManager.STREAM_MUSIC,
             newVolume,

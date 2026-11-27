@@ -282,6 +282,10 @@
     <string name="cast_forward_30s">Forward 30s</string>
     <string name="playback_speed">Playback Speed</string>
     <string name="cast_volume">Volume</string>
+    <string name="cast_casting_to">Casting to %1$s</string>
+    <string name="cast_casting">Casting</string>
+    <string name="cast_stop_casting">Stop casting</string>
+    <string name="cast_now_playing_open">Open cast controls</string>
     <string name="cast_end_session">End Cast Session</string>
 
 
@@ -326,6 +330,7 @@
     <string name="cast_device_not_found">No cast device answered at %1$s</string>
     <string name="cast_google_failed_try_direct">Google Cast could not connect. Try Settings > Player > Casting backend > Direct.</string>
     <string name="cast_receiver_error">The TV could not play this video: %1$s</string>
+    <string name="cast_speed_limited">The TV plays at most %1$sx, so it uses that speed</string>
     <string name="login_failed">Failed to login</string>
     <string name="action_move_up">Move Up</string>
     <string name="action_move_down">Move Down</string>

@@ -108,8 +108,11 @@ import eu.kanade.tachiyomi.extension.manga.MangaExtensionManager
 import eu.kanade.tachiyomi.ui.base.activity.BaseActivity
 import eu.kanade.tachiyomi.ui.deeplink.DeepLinkScreenType
 import eu.kanade.tachiyomi.ui.home.TabEvent
+import eu.kanade.tachiyomi.ui.player.CastManager
 import eu.kanade.tachiyomi.ui.player.ExternalIntents
 import eu.kanade.tachiyomi.ui.player.PlayerActivity
+import eu.kanade.tachiyomi.ui.player.cast.CastBackend
+import eu.kanade.tachiyomi.ui.player.cast.CastNowPlayingBanner
 import eu.kanade.tachiyomi.util.system.dpToPx
 import eu.kanade.tachiyomi.util.system.isNavigationBarNeedsScrim
 import eu.kanade.tachiyomi.util.system.openInBrowser
@@ -192,6 +195,9 @@ import kotlin.time.times
 class MainActivity : BaseActivity() {
 
     private val graph: AppGraph by lazy { metroGraph() }
+
+    // Backs the app-wide cast banner, so the TV's controls stay one tap away while browsing.
+    private val castManager by lazy { CastManager(this, graph.preferenceStore) }
 
     @Inject lateinit var libraryPreferences: LibraryPreferences
 
@@ -348,6 +354,13 @@ class MainActivity : BaseActivity() {
                         .collectLatest { incognitoAnime = it }
                 }
 
+                LaunchedEffect(Unit) {
+                    // The direct backend only scans while the cast sheet is open.
+                    if (castManager.backend == CastBackend.GOOGLE_CAST) castManager.startDeviceDiscovery()
+                    castManager.reconnect()
+                }
+                val castState by castManager.castState.collectAsState()
+
                 val scaffoldInsets = WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)
                 Scaffold(
                     topBar = {
@@ -356,6 +369,11 @@ class MainActivity : BaseActivity() {
                             incognitoMode = incognito || incognitoAnime,
                             indexing = indexing || indexingAnime,
                             modifier = Modifier.windowInsetsPadding(scaffoldInsets),
+                            castBanner = if (castState == CastManager.CastState.CONNECTED) {
+                                { bannerModifier -> CastNowPlayingBanner(castManager, bannerModifier) }
+                            } else {
+                                null
+                            },
                         )
                     },
                     contentWindowInsets = scaffoldInsets,

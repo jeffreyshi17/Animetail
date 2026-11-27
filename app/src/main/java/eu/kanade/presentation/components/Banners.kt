@@ -64,6 +64,8 @@ fun AppStateBanners(
     incognitoMode: Boolean,
     indexing: Boolean,
     modifier: Modifier = Modifier,
+    // Shown last, below the state banners; it gets the status bar inset when it is topmost.
+    castBanner: (@Composable (Modifier) -> Unit)? = null,
 ) {
     val density = LocalDensity.current
     val mainInsets = WindowInsets.statusBars
@@ -110,7 +112,15 @@ fun AppStateBanners(
         }.fastMap { it.measure(constraints) }
         val incognitoHeight = incognitoPlaceable.fastMaxBy { it.height }?.height ?: 0
 
-        layout(constraints.maxWidth, indexingHeight + downloadedOnlyHeight + incognitoHeight) {
+        val castPlaceable = subcompose(3) {
+            if (castBanner != null) {
+                val top = (mainInsetsTop - indexingHeight - downloadedOnlyHeight - incognitoHeight).coerceAtLeast(0)
+                castBanner(Modifier.windowInsetsPadding(WindowInsets(top = top)))
+            }
+        }.fastMap { it.measure(constraints) }
+        val castHeight = castPlaceable.fastMaxBy { it.height }?.height ?: 0
+
+        layout(constraints.maxWidth, indexingHeight + downloadedOnlyHeight + incognitoHeight + castHeight) {
             indexingPlaceable.fastForEach {
                 it.place(0, 0)
             }
@@ -119,6 +129,9 @@ fun AppStateBanners(
             }
             incognitoPlaceable.fastForEach {
                 it.place(0, indexingHeight + downloadedOnlyHeight)
+            }
+            castPlaceable.fastForEach {
+                it.place(0, indexingHeight + downloadedOnlyHeight + incognitoHeight)
             }
         }
     }

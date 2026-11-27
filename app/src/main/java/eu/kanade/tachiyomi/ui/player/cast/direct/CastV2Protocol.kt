@@ -125,6 +125,17 @@ object CastV2Protocol {
 
     fun pause(requestId: Int, mediaSessionId: Int): String = mediaCommand("PAUSE", requestId, mediaSessionId)
 
+    /** The Default Media Receiver plays between 0.5x and 2x. */
+    fun setPlaybackRate(requestId: Int, mediaSessionId: Int, rate: Double): String = buildJsonObject {
+        put("type", "SET_PLAYBACK_RATE")
+        put("requestId", requestId)
+        put("mediaSessionId", mediaSessionId)
+        put("playbackRate", rate.coerceIn(MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE))
+    }.toString()
+
+    const val MIN_PLAYBACK_RATE = 0.5
+    const val MAX_PLAYBACK_RATE = 2.0
+
     fun stopMedia(requestId: Int, mediaSessionId: Int): String = mediaCommand("STOP", requestId, mediaSessionId)
 
     fun seek(requestId: Int, mediaSessionId: Int, positionSeconds: Double): String = buildJsonObject {

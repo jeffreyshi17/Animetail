@@ -105,6 +105,7 @@ import eu.kanade.tachiyomi.network.NetworkPreferences
 import eu.kanade.tachiyomi.ui.base.delegate.SecureActivityDelegateImpl
 import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.ui.player.PlayerActivity
+import eu.kanade.tachiyomi.ui.player.cast.CastNowPlaying
 import eu.kanade.tachiyomi.ui.player.cast.direct.DirectCastController
 import eu.kanade.tachiyomi.ui.player.cast.proxy.CastProxyHolder
 import eu.kanade.tachiyomi.ui.player.settings.AdvancedPlayerPreferences
@@ -297,6 +298,7 @@ interface AppGraph : ViewModelGraph {
     val localHttpServerHolder: LocalHttpServerHolder
     val castProxyHolder: CastProxyHolder
     val directCastController: DirectCastController
+    val castNowPlaying: CastNowPlaying
     val torrentServerApi: TorrentServerApi
     val torrentServerUtils: TorrentServerUtils
 
